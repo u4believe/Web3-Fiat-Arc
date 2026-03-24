@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "USDC Send"
+version = "1.0.0"
+id = "artifacts/usdc-send"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 19869
+
+[services.development]
+run = "pnpm --filter @workspace/usdc-send run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/usdc-send", "run", "build" ]
+publicDir = "artifacts/usdc-send/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "19869"
+BASE_PATH = "/"

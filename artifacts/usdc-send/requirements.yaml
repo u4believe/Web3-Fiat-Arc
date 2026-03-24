@@ -1,0 +1,18 @@
+packages:
+  "ethers": "Web3 interactions with MetaMask and smart contracts"
+  "framer-motion": "Smooth animations and page transitions"
+  "react-hook-form": "Form state management"
+  "@hookform/resolvers": "Zod validation integration"
+  "date-fns": "Date formatting for transaction history"
+  "clsx": "Utility for constructing className strings"
+  "tailwind-merge": "Utility for merging tailwind classes safely"
+
+images:
+  - path: "artifacts/usdc-send/public/images/hero-bg.png"
+    description: "Clean abstract fintech background, light mode, subtle glassmorphism, glowing deep blue and teal accents, soft geometric shapes, premium 3D render feel"
+    aspect_ratio: "16:9"
+
+notes:
+  - Custom fetch client will automatically handle Authorization header from localStorage token
+  - API endpoints prefix is /api (handled by proxy)
+  - Ethers v6 is used for connecting to injected window.ethereum

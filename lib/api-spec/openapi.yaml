@@ -1,15 +1,21 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: USDC Send API - Web3 + Web2 hybrid escrow system
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: auth
+    description: User authentication and registration
+  - name: escrow
+    description: USDC escrow operations
+  - name: withdraw
+    description: Withdrawal operations
+
 paths:
   /healthz:
     get:
@@ -24,7 +30,288 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /auth/register:
+    post:
+      operationId: registerUser
+      tags: [auth]
+      summary: Register a new user
+      description: Register with email to claim escrow funds
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: User registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/login:
+    post:
+      operationId: loginUser
+      tags: [auth]
+      summary: Login user
+      description: Login with email to access the dashboard
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/me:
+    get:
+      operationId: getCurrentUser
+      tags: [auth]
+      summary: Get current user
+      description: Get the currently authenticated user's info
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current user info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserInfo"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /escrow/send:
+    post:
+      operationId: sendUSDC
+      tags: [escrow]
+      summary: Send USDC to an email address
+      description: Initiates escrow deposit for a recipient email. Returns transaction data to sign on the frontend.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendUSDCRequest"
+      responses:
+        "200":
+          description: Escrow transaction details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SendUSDCResponse"
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /escrow/pending:
+    get:
+      operationId: getPendingEscrows
+      tags: [escrow]
+      summary: Get pending escrows for current user
+      description: Returns all unclaimed escrow deposits for the authenticated user's email
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of pending escrows
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PendingEscrowsResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /escrow/claim:
+    post:
+      operationId: claimEscrow
+      tags: [escrow]
+      summary: Claim escrow funds
+      description: Claim all pending escrow deposits for the authenticated user
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClaimEscrowRequest"
+      responses:
+        "200":
+          description: Claim successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimEscrowResponse"
+        "400":
+          description: No funds to claim or error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /escrow/history:
+    get:
+      operationId: getEscrowHistory
+      tags: [escrow]
+      summary: Get escrow history for the authenticated user
+      description: Returns all sent and received escrow transactions
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Escrow transaction history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EscrowHistoryResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /escrow/balance:
+    get:
+      operationId: getUserBalance
+      tags: [escrow]
+      summary: Get user balance
+      description: Returns claimed USDC balance and pending amounts
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: User balance info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BalanceResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /withdraw/crypto:
+    post:
+      operationId: withdrawCrypto
+      tags: [withdraw]
+      summary: Withdraw to crypto wallet
+      description: Transfer claimed USDC balance to a crypto wallet address
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WithdrawCryptoRequest"
+      responses:
+        "200":
+          description: Withdrawal successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WithdrawResponse"
+        "400":
+          description: Insufficient balance or invalid address
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /withdraw/fiat:
+    post:
+      operationId: withdrawFiat
+      tags: [withdraw]
+      summary: Withdraw as USD via Circle
+      description: Convert USDC balance to USD and withdraw via Circle API
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WithdrawFiatRequest"
+      responses:
+        "200":
+          description: Fiat withdrawal initiated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WithdrawFiatResponse"
+        "400":
+          description: Insufficient balance or invalid bank details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
   schemas:
     HealthStatus:
       type: object
@@ -34,3 +321,299 @@ components:
       required:
         - status
 
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required:
+        - error
+        - message
+
+    RegisterRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+        name:
+          type: string
+      required:
+        - email
+        - password
+        - name
+
+    LoginRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+      required:
+        - email
+        - password
+
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        user:
+          $ref: "#/components/schemas/UserInfo"
+      required:
+        - token
+        - user
+
+    UserInfo:
+      type: object
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+        name:
+          type: string
+        walletAddress:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - email
+        - name
+        - createdAt
+
+    SendUSDCRequest:
+      type: object
+      properties:
+        recipientEmail:
+          type: string
+          format: email
+        amount:
+          type: string
+          description: Amount in USDC (as string to preserve precision)
+        senderAddress:
+          type: string
+          description: Sender's wallet address
+      required:
+        - recipientEmail
+        - amount
+        - senderAddress
+
+    SendUSDCResponse:
+      type: object
+      properties:
+        escrowId:
+          type: integer
+        contractAddress:
+          type: string
+        usdcAddress:
+          type: string
+        emailHash:
+          type: string
+          description: Keccak256 hash of the recipient email
+        amount:
+          type: string
+          description: Amount in USDC
+        amountWei:
+          type: string
+          description: Amount in wei (smallest USDC unit with 6 decimals)
+        message:
+          type: string
+      required:
+        - escrowId
+        - contractAddress
+        - usdcAddress
+        - emailHash
+        - amount
+        - amountWei
+        - message
+
+    EscrowRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        senderAddress:
+          type: string
+        recipientEmail:
+          type: string
+          nullable: true
+        amount:
+          type: string
+          description: Amount in USDC
+        status:
+          type: string
+          enum: [pending, claimed, refunded, withdrawn]
+        txHash:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        claimedAt:
+          type: string
+          format: date-time
+          nullable: true
+      required:
+        - id
+        - senderAddress
+        - amount
+        - status
+        - createdAt
+
+    PendingEscrowsResponse:
+      type: object
+      properties:
+        escrows:
+          type: array
+          items:
+            $ref: "#/components/schemas/EscrowRecord"
+        totalPendingAmount:
+          type: string
+          description: Total pending amount in USDC/USD
+      required:
+        - escrows
+        - totalPendingAmount
+
+    ClaimEscrowRequest:
+      type: object
+      properties:
+        recipientWalletAddress:
+          type: string
+          description: Wallet address to receive the USDC (optional, claim to app balance if not provided)
+      required: []
+
+    ClaimEscrowResponse:
+      type: object
+      properties:
+        claimedCount:
+          type: integer
+        totalClaimed:
+          type: string
+          description: Total amount claimed in USDC
+        txHashes:
+          type: array
+          items:
+            type: string
+        message:
+          type: string
+      required:
+        - claimedCount
+        - totalClaimed
+        - txHashes
+        - message
+
+    EscrowHistoryResponse:
+      type: object
+      properties:
+        sent:
+          type: array
+          items:
+            $ref: "#/components/schemas/EscrowRecord"
+        received:
+          type: array
+          items:
+            $ref: "#/components/schemas/EscrowRecord"
+      required:
+        - sent
+        - received
+
+    BalanceResponse:
+      type: object
+      properties:
+        claimedBalance:
+          type: string
+          description: Available claimed USDC balance (= USD)
+        pendingBalance:
+          type: string
+          description: Pending (unclaimed) USDC balance
+        usdEquivalent:
+          type: string
+          description: Total USD equivalent (1 USDC = 1 USD)
+      required:
+        - claimedBalance
+        - pendingBalance
+        - usdEquivalent
+
+    WithdrawCryptoRequest:
+      type: object
+      properties:
+        walletAddress:
+          type: string
+          description: Destination wallet address
+        amount:
+          type: string
+          description: Amount to withdraw in USDC
+      required:
+        - walletAddress
+        - amount
+
+    WithdrawFiatRequest:
+      type: object
+      properties:
+        amount:
+          type: string
+          description: Amount in USD to withdraw
+        bankAccountNumber:
+          type: string
+        routingNumber:
+          type: string
+        accountHolderName:
+          type: string
+        country:
+          type: string
+          default: "US"
+      required:
+        - amount
+        - bankAccountNumber
+        - routingNumber
+        - accountHolderName
+
+    WithdrawResponse:
+      type: object
+      properties:
+        txHash:
+          type: string
+          nullable: true
+        amount:
+          type: string
+        message:
+          type: string
+        newBalance:
+          type: string
+      required:
+        - amount
+        - message
+        - newBalance
+
+    WithdrawFiatResponse:
+      type: object
+      properties:
+        transferId:
+          type: string
+        amount:
+          type: string
+        status:
+          type: string
+        message:
+          type: string
+        newBalance:
+          type: string
+        estimatedArrival:
+          type: string
+      required:
+        - transferId
+        - amount
+        - status
+        - message
+        - newBalance
