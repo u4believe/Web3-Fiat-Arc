@@ -3,6 +3,7 @@ import bcrypt from "bcrypt";
 import { db, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { generateToken, requireAuth } from "../lib/auth.js";
+import { hashEmail } from "../lib/escrow.js";
 import {
   RegisterUserBody,
   LoginUserBody,
@@ -27,9 +28,13 @@ router.post("/register", async (req, res) => {
       return;
     }
 
+    const normalizedEmail = email.toLowerCase().trim();
+    const emailHash = hashEmail(normalizedEmail);
     const passwordHash = await bcrypt.hash(password, 10);
+
     const [user] = await db.insert(usersTable).values({
-      email: email.toLowerCase(),
+      email: normalizedEmail,
+      emailHash,
       passwordHash,
       name,
     }).returning();
@@ -61,8 +66,9 @@ router.post("/login", async (req, res) => {
     }
 
     const { email, password } = parsed.data;
+    const normalizedEmail = email.toLowerCase().trim();
 
-    const [user] = await db.select().from(usersTable).where(eq(usersTable.email, email.toLowerCase())).limit(1);
+    const [user] = await db.select().from(usersTable).where(eq(usersTable.email, normalizedEmail)).limit(1);
     if (!user) {
       res.status(401).json({ error: "Unauthorized", message: "Invalid email or password" });
       return;
@@ -72,6 +78,13 @@ router.post("/login", async (req, res) => {
     if (!valid) {
       res.status(401).json({ error: "Unauthorized", message: "Invalid email or password" });
       return;
+    }
+
+    // Backfill emailHash for existing users who registered before Phase 2
+    if (!user.emailHash) {
+      await db.update(usersTable)
+        .set({ emailHash: hashEmail(normalizedEmail) })
+        .where(eq(usersTable.id, user.id));
     }
 
     const token = generateToken({ userId: user.id, email: user.email });
