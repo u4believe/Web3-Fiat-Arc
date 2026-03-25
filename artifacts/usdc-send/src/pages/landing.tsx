@@ -162,9 +162,9 @@ export default function Landing() {
             {/* Heading */}
             <motion.div variants={fadeUp}>
               <h1 className="text-5xl lg:text-6xl font-bold text-foreground leading-tight mb-6">
-                Send USDC to{" "}
+                Send USD/USDC Globally
                 <br />
-                <span className="text-gradient-animated">Any Email Address</span>
+                <span className="text-gradient-animated">Receive USD/USDC Globally</span>
               </h1>
             </motion.div>
 
@@ -253,7 +253,7 @@ export default function Landing() {
                       <motion.div variants={staggerContainer(0.08)} initial="hidden" animate="show">
                         <motion.h2 variants={fadeUp} className="text-2xl font-bold mb-1">Funds Sent!</motion.h2>
                         <motion.p variants={fadeUp} className="text-muted-foreground text-sm mb-3">
-                          <span className="font-medium text-foreground">${successAmount} USDC</span>{" "}
+                          <span className="font-medium text-foreground">${successAmount} USD</span>{" "}
                           is locked in escrow for{" "}
                           <span className="font-medium text-foreground">{successEmail}</span>.
                           They can claim it any time after signing up.
@@ -321,7 +321,7 @@ export default function Landing() {
                           className="flex items-start gap-3 px-4 py-3 mb-5 rounded-xl bg-primary/5 border border-primary/10 text-sm text-muted-foreground"
                         >
                           <ShieldCheck className="w-4 h-4 mt-0.5 shrink-0 text-primary" />
-                          <span>Sign in or create a free account to send USDC without a crypto wallet.</span>
+                          <span>Sign in or create a free account to send USD without a crypto wallet.</span>
                         </motion.div>
                       )}
 
@@ -370,7 +370,7 @@ export default function Landing() {
                         </motion.div>
 
                         <motion.div variants={fadeUp}>
-                          <label className="block text-sm font-medium text-foreground mb-2">Amount (USDC)</label>
+                          <label className="block text-sm font-medium text-foreground mb-2">Amount (USD)</label>
                           <div className="relative">
                             <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
                               <span className="text-muted-foreground font-medium">$</span>
@@ -388,7 +388,7 @@ export default function Landing() {
                               min="0.01"
                             />
                             <div className="absolute inset-y-0 right-0 pr-4 flex items-center pointer-events-none">
-                              <span className="text-muted-foreground font-medium text-sm">USDC</span>
+                              <span className="text-muted-foreground font-medium text-sm">USD</span>
                             </div>
                           </div>
                           <AnimatePresence>

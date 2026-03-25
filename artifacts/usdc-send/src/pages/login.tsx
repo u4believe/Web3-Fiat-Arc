@@ -151,7 +151,7 @@ export default function Login() {
               <motion.div key="credentials" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -16 }}>
                 <motion.div variants={fadeUp} className="text-center mb-8">
                   <h1 className="text-3xl font-display font-bold">Welcome back</h1>
-                  <p className="text-muted-foreground mt-2">Log in to claim and manage your USDC.</p>
+                  <p className="text-muted-foreground mt-2">Log in to claim and manage your USD.</p>
                 </motion.div>
 
                 <motion.div variants={scaleIn} className="glass-panel p-8 rounded-3xl">

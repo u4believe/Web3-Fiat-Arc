@@ -15,7 +15,7 @@ export function Navbar() {
   const handleLogout = () => {
     localStorage.removeItem("token");
     queryClient.clear();
-    setLocation("/");
+    window.location.href = "/";
   };
 
   return (
@@ -31,7 +31,7 @@ export function Navbar() {
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-accent flex items-center justify-center text-white shadow-lg shadow-primary/20 group-hover:shadow-primary/40 group-hover:-translate-y-0.5 transition-all">
               <Send className="w-5 h-5" />
             </div>
-            <span className="font-display font-bold text-2xl text-foreground tracking-tight">USDC Send</span>
+            <span className="font-display font-bold text-2xl text-foreground tracking-tight">USD Send</span>
           </Link>
 
           <div className="flex items-center gap-4">

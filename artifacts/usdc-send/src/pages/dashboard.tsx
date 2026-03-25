@@ -250,7 +250,7 @@ export default function Dashboard() {
             <div className="text-4xl lg:text-5xl font-display font-bold tracking-tight mb-1">
               {bal ? <AnimatedAmount value={bal.usdBalance} /> : "$0.00"}
             </div>
-            <div className="text-white/70 text-sm mb-5">1 USDC = 1 USD · stablecoin peg</div>
+            <div className="text-white/70 text-sm mb-5">Backed 1:1 by USDC · stablecoin</div>
 
             <div className="space-y-2 border-t border-white/20 pt-4">
               <div className="flex items-center justify-between text-sm">
@@ -333,7 +333,7 @@ export default function Dashboard() {
                 >
                   <div className="flex items-center gap-2 text-green-700 font-semibold text-sm mb-1">
                     <CheckCircle2 className="w-4 h-4" />
-                    {claimTotal ? `${claimTotal} USDC claimed!` : "Claimed successfully!"}
+                    {claimTotal ? `${claimTotal} USD claimed!` : "Claimed successfully!"}
                   </div>
                   {claimTxHash && (
                     <div className="flex items-center gap-1 text-xs text-green-600 font-mono truncate">
@@ -396,7 +396,7 @@ export default function Dashboard() {
           <div className="flex border-b border-border relative">
             {([
               { id: "history",  label: "History",      icon: Clock },
-              { id: "send",     label: "Send USDC",    icon: Send  },
+              { id: "send",     label: "Send USD",     icon: Send  },
               { id: "withdraw", label: "Withdraw",     icon: Wallet },
             ] as const).map(({ id, label, icon: Icon }) => (
               <button
@@ -465,7 +465,7 @@ export default function Dashboard() {
                                   {isReceived ? <ArrowDownLeft className="w-5 h-5" /> : <ArrowUpRight className="w-5 h-5" />}
                                 </motion.div>
                                 <div className="min-w-0">
-                                  <p className="font-semibold text-foreground">{isReceived ? "Received USDC" : "Sent USDC"}</p>
+                                  <p className="font-semibold text-foreground">{isReceived ? "Received USD" : "Sent USD"}</p>
                                   <p className="text-xs text-muted-foreground flex items-center gap-1.5 flex-wrap">
                                     <span>{format(new Date(tx.createdAt), "MMM d, yyyy 'at' h:mm a")}</span>
                                     <span className="w-1 h-1 rounded-full bg-border" />
@@ -600,7 +600,7 @@ function CryptoWithdrawalForm({ mutation, maxAmount, circleWalletAddress }: { mu
     setErrorMsg(null);
     try {
       await mutation.mutateAsync({ data });
-      setSuccessMsg(`Withdrawal of ${formatCurrency(data.amount)} USDC initiated.`);
+      setSuccessMsg(`Withdrawal of ${formatCurrency(data.amount)} USD initiated.`);
       reset();
     } catch (e: any) {
       setErrorMsg(e?.message || "Withdrawal failed. Please try again.");
@@ -665,7 +665,7 @@ function CryptoWithdrawalForm({ mutation, maxAmount, circleWalletAddress }: { mu
             step="0.01"
             className="w-full pl-8 pr-16 py-3 rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 outline-none transition-all"
           />
-          <span className="absolute right-4 inset-y-0 flex items-center text-muted-foreground text-sm">USDC</span>
+          <span className="absolute right-4 inset-y-0 flex items-center text-muted-foreground text-sm">USD</span>
         </div>
         {errors.amount && <p className="text-destructive text-sm mt-1">{errors.amount.message as string}</p>}
       </motion.div>
@@ -689,14 +689,14 @@ function FiatComingSoon() {
   const steps = [
     {
       icon: <Wallet className="w-5 h-5" />,
-      label: "Claim USDC",
-      desc: "Your claimed USDC balance transfers to the platform wallet",
+      label: "Claim USD",
+      desc: "Your claimed USD balance transfers to the platform wallet",
       color: "bg-blue-50 text-blue-600 border-blue-200",
     },
     {
       icon: <ArrowRight className="w-5 h-5" />,
       label: "Circle converts",
-      desc: "Circle's Payout API converts USDC to USD at 1:1 peg",
+      desc: "Circle's Payout API converts to USD at 1:1 peg",
       color: "bg-violet-50 text-violet-600 border-violet-200",
     },
     {
@@ -728,7 +728,7 @@ function FiatComingSoon() {
       <motion.div variants={fadeUp} className="space-y-2 max-w-sm">
         <h3 className="text-2xl font-bold text-foreground">Send USD to Your Bank</h3>
         <p className="text-muted-foreground text-sm leading-relaxed">
-          Withdraw your USDC balance as real USD directly to your bank account — no crypto wallet needed.
+          Withdraw your USD balance directly to your bank account — no crypto wallet needed.
         </p>
       </motion.div>
 
@@ -777,7 +777,7 @@ const dashSendSchema = z.object({
     .string()
     .min(1, "Amount is required")
     .refine((v) => !isNaN(Number(v)) && Number(v) > 0, "Must be a positive number")
-    .refine((v) => Number(v) >= 0.01, "Minimum is $0.01 USDC"),
+    .refine((v) => Number(v) >= 0.01, "Minimum is $0.01 USD"),
 });
 
 type DashSendValues = z.infer<typeof dashSendSchema>;
@@ -800,7 +800,7 @@ function DashboardSendForm({ onSuccess }: { onSuccess: () => void }) {
     setFormError(null);
     const numAmount = parseFloat(data.amount);
     if (numAmount > availableBalance) {
-      setFormError(`Insufficient balance. You have $${availableBalance.toFixed(2)} USDC available.`);
+      setFormError(`Insufficient balance. You have $${availableBalance.toFixed(2)} USD available.`);
       return;
     }
     setIsSending(true);
@@ -862,7 +862,7 @@ function DashboardSendForm({ onSuccess }: { onSuccess: () => void }) {
           <motion.div variants={staggerContainer(0.08)} initial="hidden" animate="show">
             <motion.h3 variants={fadeUp} className="text-2xl font-bold mb-1">Payment Sent!</motion.h3>
             <motion.p variants={fadeUp} className="text-muted-foreground text-sm mb-2">
-              <span className="font-semibold text-foreground">${successAmount} USDC</span> locked in escrow for{" "}
+              <span className="font-semibold text-foreground">${successAmount} USD</span> locked in escrow for{" "}
               <span className="font-semibold text-foreground">{successEmail}</span>.
               They'll receive a notification to claim it.
             </motion.p>
@@ -898,7 +898,7 @@ function DashboardSendForm({ onSuccess }: { onSuccess: () => void }) {
           <motion.div variants={fadeUp} className="mb-6">
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="text-xl font-bold font-display">Send USDC</h3>
+                <h3 className="text-xl font-bold font-display">Send USD</h3>
                 <p className="text-sm text-muted-foreground mt-0.5">Lock funds in escrow for any email address</p>
               </div>
               <motion.div
@@ -963,7 +963,7 @@ function DashboardSendForm({ onSuccess }: { onSuccess: () => void }) {
             {/* Amount */}
             <motion.div variants={fadeUp}>
               <label className="block text-sm font-medium text-foreground mb-2">
-                Amount (USDC)
+                Amount (USD)
               </label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
@@ -982,7 +982,7 @@ function DashboardSendForm({ onSuccess }: { onSuccess: () => void }) {
                   )}
                 />
                 <div className="absolute inset-y-0 right-0 pr-4 flex items-center pointer-events-none">
-                  <span className="text-muted-foreground font-medium text-sm">USDC</span>
+                  <span className="text-muted-foreground font-medium text-sm">USD</span>
                 </div>
               </div>
               <AnimatePresence>
