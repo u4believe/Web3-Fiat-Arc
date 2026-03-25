@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useLocation } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import {
-  Wallet,
   ArrowRight,
   ShieldCheck,
   Mail,
@@ -12,18 +12,16 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
-  ExternalLink,
+  LogIn,
+  UserPlus,
   Copy,
   Check,
 } from "lucide-react";
-import { useSendUSDC } from "@workspace/api-client-react";
-import { useWeb3 } from "@/hooks/use-web3";
-import { cn, formatAddress } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { AppLayout } from "@/components/layout";
 import { fadeUp, slideLeft, slideRight, scaleIn, staggerContainer, fadeIn } from "@/lib/motion";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
-const ARC_EXPLORER = "https://explorer.arc.io/tx/";
 
 const sendSchema = z.object({
   recipientEmail: z.string().email("Please enter a valid email address"),
@@ -35,15 +33,6 @@ const sendSchema = z.object({
 });
 
 type SendFormValues = z.infer<typeof sendSchema>;
-type TxStep = "idle" | "approving" | "approved" | "depositing" | "success";
-
-async function confirmSendOnServer(escrowId: number, txHash: string) {
-  await fetch(`${BASE}/api/escrow/send/confirm`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ escrowId, txHash }),
-  });
-}
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -59,118 +48,63 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-function StepIndicator({ step }: { step: TxStep }) {
-  const steps: { id: TxStep; label: string }[] = [
-    { id: "approving", label: "Approve USDC" },
-    { id: "depositing", label: "Deposit to Escrow" },
-    { id: "success", label: "Confirmed" },
-  ];
-  const activeIndex = steps.findIndex(
-    (s) => s.id === step || (step === "approved" && s.id === "depositing"),
-  );
-
-  return (
-    <div className="flex items-center gap-0 mb-6">
-      {steps.map((s, i) => {
-        const done =
-          (step === "approved" && i === 0) ||
-          (step === "depositing" && i === 0) ||
-          (step === "success" && i <= 1);
-        const active =
-          (step === "approving" && i === 0) ||
-          ((step === "approved" || step === "depositing") && i === 1) ||
-          (step === "success" && i === 2);
-        return (
-          <div key={s.id} className="flex items-center flex-1">
-            <div className="flex flex-col items-center gap-1 flex-1">
-              <motion.div
-                animate={active ? { scale: [1, 1.12, 1] } : {}}
-                transition={{ repeat: Infinity, duration: 1.5, ease: "easeInOut" }}
-                className={cn(
-                  "w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-all duration-300",
-                  done ? "bg-green-500 text-white" : active ? "bg-primary text-white ring-4 ring-primary/20" : "bg-secondary text-muted-foreground",
-                )}
-              >
-                {done ? <Check className="w-3.5 h-3.5" /> : i + 1}
-              </motion.div>
-              <span className={cn("text-[10px] font-medium whitespace-nowrap", active ? "text-primary" : done ? "text-green-600" : "text-muted-foreground")}>
-                {s.label}
-              </span>
-            </div>
-            {i < steps.length - 1 && (
-              <motion.div
-                animate={done ? { scaleX: 1 } : { scaleX: 0 }}
-                initial={{ scaleX: 0 }}
-                style={{ originX: 0 }}
-                transition={{ duration: 0.4 }}
-                className={cn("h-0.5 flex-1 mx-1 rounded-full", done ? "bg-green-400" : "bg-border")}
-              />
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 export default function Landing() {
-  const { address, connectWallet, isConnecting, depositToEscrow } = useWeb3();
-  const sendMutation = useSendUSDC();
-  const [txStep, setTxStep] = useState<TxStep>("idle");
-  const [txHash, setTxHash] = useState<string | null>(null);
-  const [formError, setFormError] = useState<string | null>(null);
+  const [, navigate] = useLocation();
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isSending,    setIsSending]    = useState(false);
+  const [formError,    setFormError]    = useState<string | null>(null);
   const [successEmail, setSuccessEmail] = useState("");
   const [successAmount, setSuccessAmount] = useState("");
+  const [didSucceed,   setDidSucceed]   = useState(false);
+
+  useEffect(() => {
+    setIsLoggedIn(!!localStorage.getItem("token"));
+  }, []);
 
   const { register, handleSubmit, reset, formState: { errors } } = useForm<SendFormValues>({
     resolver: zodResolver(sendSchema),
   });
 
   const onSubmit = async (data: SendFormValues) => {
+    if (!isLoggedIn) {
+      navigate(`${BASE}/login`);
+      return;
+    }
     setFormError(null);
+    setIsSending(true);
     try {
-      let currentAddress = address;
-      if (!currentAddress) {
-        currentAddress = await connectWallet();
-        if (!currentAddress) return;
-      }
-      setTxStep("approving");
-      const response = await sendMutation.mutateAsync({
-        data: {
+      const jwt = localStorage.getItem("token");
+      const sendHeaders: Record<string, string> = { "Content-Type": "application/json" };
+      if (jwt) sendHeaders["Authorization"] = `Bearer ${jwt}`;
+      const res = await fetch(`${BASE}/api/escrow/send/platform`, {
+        method: "POST",
+        headers: sendHeaders,
+        body: JSON.stringify({
           recipientEmail: data.recipientEmail.toLowerCase().trim(),
           amount: data.amount,
-          senderAddress: currentAddress,
-        },
+        }),
       });
-      const hash = await depositToEscrow(
-        response.contractAddress,
-        response.usdcAddress,
-        response.emailHash,
-        response.amountWei,
-        () => setTxStep("depositing"),
-      );
-      confirmSendOnServer(response.escrowId, hash).catch(console.warn);
-      setTxHash(hash);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.message ?? "Failed to send payment");
       setSuccessEmail(data.recipientEmail.toLowerCase().trim());
       setSuccessAmount(data.amount);
-      setTxStep("success");
+      setDidSucceed(true);
     } catch (err: any) {
-      setTxStep("idle");
-      const msg: string = err?.reason ?? err?.info?.error?.message ?? err?.message ?? "Transaction failed. Please try again.";
-      setFormError(msg.length > 200 ? msg.slice(0, 200) + "…" : msg);
+      setFormError(err?.message ?? "Failed to send. Please try again.");
+    } finally {
+      setIsSending(false);
     }
   };
 
   const handleSendAnother = () => {
-    setTxStep("idle");
-    setTxHash(null);
+    setDidSucceed(false);
     setFormError(null);
     setSuccessEmail("");
     setSuccessAmount("");
     reset();
   };
 
-  const isBusy = txStep !== "idle";
+  const isBusy = isSending;
 
   return (
     <AppLayout>
@@ -299,7 +233,7 @@ export default function Landing() {
 
                 <AnimatePresence mode="wait">
                   {/* ── Success state ── */}
-                  {txStep === "success" ? (
+                  {didSucceed ? (
                     <motion.div
                       key="success"
                       variants={scaleIn}
@@ -318,26 +252,17 @@ export default function Landing() {
                       </motion.div>
                       <motion.div variants={staggerContainer(0.08)} initial="hidden" animate="show">
                         <motion.h2 variants={fadeUp} className="text-2xl font-bold mb-1">Funds Sent!</motion.h2>
-                        <motion.p variants={fadeUp} className="text-muted-foreground text-sm mb-5">
+                        <motion.p variants={fadeUp} className="text-muted-foreground text-sm mb-3">
                           <span className="font-medium text-foreground">${successAmount} USDC</span>{" "}
                           is locked in escrow for{" "}
                           <span className="font-medium text-foreground">{successEmail}</span>.
                           They can claim it any time after signing up.
                         </motion.p>
-                        {txHash && (
-                          <motion.div variants={fadeUp} className="bg-secondary/60 rounded-xl px-4 py-3 mb-5 flex items-center justify-between gap-2 text-left">
-                            <div className="min-w-0">
-                              <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-0.5 font-semibold">Transaction Hash</p>
-                              <p className="font-mono text-xs text-foreground truncate">{txHash}</p>
-                            </div>
-                            <div className="flex items-center gap-1 shrink-0">
-                              <CopyButton text={txHash} />
-                              <a href={`${ARC_EXPLORER}${txHash}`} target="_blank" rel="noopener noreferrer" className="p-1 rounded hover:bg-white/20 transition-colors">
-                                <ExternalLink className="w-3.5 h-3.5 opacity-60 hover:opacity-100" />
-                              </a>
-                            </div>
-                          </motion.div>
-                        )}
+                        <motion.div variants={fadeUp} className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-violet-50 text-violet-700 text-xs font-medium border border-violet-200 mb-5">
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                          Sent from your platform balance — no wallet needed
+                        </motion.div>
+                        <br />
                         <motion.button
                           variants={fadeUp}
                           whileHover={{ scale: 1.03 }}
@@ -353,37 +278,52 @@ export default function Landing() {
                     /* ── Form state ── */
                     <motion.div key="form" variants={fadeIn} initial="hidden" animate="show" exit="hidden">
                       {/* Header */}
-                      <div className="flex items-center justify-between mb-6">
+                      <div className="flex items-center justify-between mb-5">
                         <h2 className="text-2xl font-bold font-display">Send Payment</h2>
-                        {address ? (
+                        {isLoggedIn ? (
                           <motion.div
                             initial={{ opacity: 0, scale: 0.9 }}
                             animate={{ opacity: 1, scale: 1 }}
-                            className="flex items-center gap-2 px-3 py-1.5 bg-green-50 text-green-700 rounded-full text-sm font-medium border border-green-200"
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-50 text-violet-700 rounded-full text-xs font-semibold border border-violet-200"
                           >
-                            <motion.div
-                              animate={{ scale: [1, 1.4, 1] }}
-                              transition={{ repeat: Infinity, duration: 1.5 }}
-                              className="w-2 h-2 rounded-full bg-green-500"
-                            />
-                            {formatAddress(address)}
+                            <ShieldCheck className="w-3.5 h-3.5" />
+                            No wallet needed
                           </motion.div>
                         ) : (
-                          <motion.button
-                            type="button"
-                            onClick={connectWallet}
-                            disabled={isConnecting}
-                            whileHover={{ scale: 1.03 }}
-                            whileTap={{ scale: 0.97 }}
-                            className="flex items-center gap-2 px-4 py-2 bg-secondary text-foreground rounded-xl text-sm font-medium hover:bg-secondary/80 transition-colors disabled:opacity-50"
-                          >
-                            <Wallet className="w-4 h-4" />
-                            {isConnecting ? "Connecting…" : "Connect Wallet"}
-                          </motion.button>
+                          <div className="flex items-center gap-2">
+                            <motion.a
+                              href={`${BASE}/login`}
+                              whileHover={{ scale: 1.03 }}
+                              whileTap={{ scale: 0.97 }}
+                              className="flex items-center gap-1.5 px-3 py-1.5 bg-secondary text-foreground rounded-xl text-xs font-medium hover:bg-secondary/80 transition-colors"
+                            >
+                              <LogIn className="w-3.5 h-3.5" />
+                              Sign In
+                            </motion.a>
+                            <motion.a
+                              href={`${BASE}/register`}
+                              whileHover={{ scale: 1.03 }}
+                              whileTap={{ scale: 0.97 }}
+                              className="flex items-center gap-1.5 px-3 py-1.5 bg-primary text-white rounded-xl text-xs font-medium hover:bg-primary/90 transition-colors"
+                            >
+                              <UserPlus className="w-3.5 h-3.5" />
+                              Create Account
+                            </motion.a>
+                          </div>
                         )}
                       </div>
 
-                      {isBusy && <StepIndicator step={txStep} />}
+                      {/* Sign-in prompt for unauthenticated users */}
+                      {!isLoggedIn && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -4 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="flex items-start gap-3 px-4 py-3 mb-5 rounded-xl bg-primary/5 border border-primary/10 text-sm text-muted-foreground"
+                        >
+                          <ShieldCheck className="w-4 h-4 mt-0.5 shrink-0 text-primary" />
+                          <span>Sign in or create a free account to send USDC without a crypto wallet.</span>
+                        </motion.div>
+                      )}
 
                       {/* Inline error */}
                       <AnimatePresence>
@@ -470,23 +410,14 @@ export default function Landing() {
                           >
                             <div className="absolute inset-0 bg-gradient-to-r from-primary to-accent opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
                             <span className="relative z-10 flex items-center gap-2">
-                              {txStep === "approving" && <><Loader2 className="w-5 h-5 animate-spin" />Approving USDC in wallet…</>}
-                              {(txStep === "approved" || txStep === "depositing") && <><Loader2 className="w-5 h-5 animate-spin" />Depositing to Escrow…</>}
-                              {txStep === "idle" && <>Lock &amp; Send <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" /></>}
+                              {isBusy
+                                ? <><Loader2 className="w-5 h-5 animate-spin" />Sending…</>
+                                : isLoggedIn
+                                  ? <>Lock &amp; Send <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" /></>
+                                  : <>Sign In to Send <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" /></>
+                              }
                             </span>
                           </motion.button>
-
-                          {isBusy && (
-                            <motion.p
-                              initial={{ opacity: 0 }}
-                              animate={{ opacity: 1 }}
-                              className="text-center text-xs text-muted-foreground mt-2"
-                            >
-                              {txStep === "approving"
-                                ? "Step 1 of 2 — Approve the USDC spend in your wallet"
-                                : "Step 2 of 2 — Confirm the deposit transaction in your wallet"}
-                            </motion.p>
-                          )}
                         </motion.div>
                       </motion.form>
                     </motion.div>

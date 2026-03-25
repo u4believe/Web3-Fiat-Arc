@@ -487,6 +487,80 @@ router.get("/history", requireAuth, async (req, res) => {
   }
 });
 
+// ─── POST /api/escrow/send/platform ──────────────────────────────────────────
+// Wallet-free send: deducts from the sender's claimed_balance and creates an
+// escrow record for the recipient. No on-chain transaction required.
+router.post("/send/platform", requireAuth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+
+    const body = req.body as { recipientEmail?: unknown; amount?: unknown };
+    const recipientEmail = typeof body.recipientEmail === "string" ? body.recipientEmail.toLowerCase().trim() : "";
+    const amountRaw = typeof body.amount === "string" ? body.amount.trim() : "";
+
+    if (!recipientEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmail)) {
+      res.status(400).json({ error: "Validation error", message: "A valid recipient email is required" });
+      return;
+    }
+
+    if (recipientEmail === user.email.toLowerCase()) {
+      res.status(400).json({ error: "Invalid recipient", message: "You cannot send USDC to yourself" });
+      return;
+    }
+
+    const numAmount = parseFloat(amountRaw);
+    if (isNaN(numAmount) || numAmount <= 0) {
+      res.status(400).json({ error: "Invalid amount", message: "Amount must be a positive number" });
+      return;
+    }
+    if (numAmount > 1_000_000) {
+      res.status(400).json({ error: "Invalid amount", message: "Amount exceeds the maximum single-transfer limit" });
+      return;
+    }
+
+    const [sender] = await db.select().from(usersTable).where(eq(usersTable.id, user.userId)).limit(1);
+    const currentBalance = parseFloat(sender?.claimedBalance ?? "0");
+
+    if (currentBalance < numAmount) {
+      res.status(400).json({
+        error: "Insufficient balance",
+        message: `You only have $${currentBalance.toFixed(2)} USDC available. Top up your balance first.`,
+      });
+      return;
+    }
+
+    const newBalance = (currentBalance - numAmount).toFixed(6);
+    const emailHash = hashEmail(recipientEmail);
+    const amountStr = numAmount.toFixed(6);
+
+    await db.update(usersTable)
+      .set({ claimedBalance: newBalance })
+      .where(eq(usersTable.id, user.userId));
+
+    const [escrow] = await db.insert(escrowsTable).values({
+      senderAddress: user.email,
+      recipientEmail,
+      emailHash,
+      amount: amountStr,
+      amountWei: parseUsdcAmount(amountStr).toString(),
+      status: "confirmed",
+      txHash: null,
+    }).returning();
+
+    res.json({
+      success: true,
+      escrowId: escrow.id,
+      recipientEmail,
+      amount: amountStr,
+      remainingBalance: newBalance,
+      message: `$${numAmount.toFixed(2)} USDC locked in escrow for ${recipientEmail}`,
+    });
+  } catch (error: any) {
+    req.log.error({ err: error }, "[send/platform] Error");
+    res.status(500).json({ error: "Internal server error", message: error.message });
+  }
+});
+
 // ─── GET /api/escrow/balance ──────────────────────────────────────────────────
 // Phase 6: reads escrow_balances (indexer), escrows (DB pending), users.claimed_balance.
 // 1 USDC = 1 USD (stablecoin peg).
