@@ -8,7 +8,10 @@ const USDC_ADDRESS = process.env.USDC_ADDRESS!;
 // Minimal ABI for the escrow contract
 export const ESCROW_ABI = [
   "function depositByEmailHash(bytes32 emailHash, uint256 amount) external",
+  // Legacy: backend calls on behalf of user (no signature required)
   "function claimByEmailHash(bytes32 emailHash, address recipient) external",
+  // Phase 5: user calls with backend-signed authorization
+  "function claimByEmailHash(bytes32 emailHash, address recipient, bytes calldata signature) external",
   "function getDepositsByEmailHash(bytes32 emailHash) external view returns (uint256)",
   "event Deposited(address indexed sender, bytes32 indexed emailHash, uint256 amount)",
   "event Claimed(bytes32 indexed emailHash, address indexed recipient, uint256 amount)",

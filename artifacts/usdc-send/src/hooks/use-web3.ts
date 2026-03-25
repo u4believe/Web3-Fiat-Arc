@@ -9,6 +9,8 @@ const USDC_ABI = [
 
 const ESCROW_ABI = [
   "function depositByEmailHash(bytes32 emailHash, uint256 amount) public",
+  // Phase 5: user submits claim tx with backend-issued signature
+  "function claimByEmailHash(bytes32 emailHash, address recipient, bytes calldata signature) external",
 ];
 
 export function useWeb3() {
@@ -66,6 +68,30 @@ export function useWeb3() {
   }, []);
 
   /**
+   * Phase 5 claim flow — user's wallet calls the contract with a backend-signed
+   * authorization:  contract.claimByEmailHash(emailHash, recipient, signature)
+   *
+   * @returns receipt tx hash
+   */
+  const claimFromEscrow = useCallback(async (
+    contractAddress: string,
+    emailHash: string,
+    recipientAddress: string,
+    signature: string,
+  ): Promise<string> => {
+    if (!window.ethereum) throw new Error("No wallet connected");
+
+    const provider = new BrowserProvider(window.ethereum);
+    const signer = await provider.getSigner();
+
+    const escrow = new Contract(contractAddress, ESCROW_ABI, signer);
+    const tx = await escrow.claimByEmailHash(emailHash, recipientAddress, signature);
+    const receipt = await tx.wait();
+
+    return receipt.hash ?? tx.hash;
+  }, []);
+
+  /**
    * Executes the two-step on-chain send:
    *   1. ERC-20 approve(escrowContract, amountWei)
    *   2. escrow.depositByEmailHash(emailHash, amountWei)
@@ -104,6 +130,7 @@ export function useWeb3() {
     error,
     connectWallet,
     depositToEscrow,
+    claimFromEscrow,
   };
 }
 

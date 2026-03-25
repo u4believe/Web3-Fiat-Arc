@@ -213,6 +213,107 @@ router.post("/claim", requireAuth, async (req, res) => {
   }
 });
 
+// POST /api/escrow/claim/sign — Phase 5 claim flow
+// Authenticated user provides their wallet address; backend signs (emailHash, walletAddress)
+// so the frontend can submit the claim tx itself (user pays gas, backend authorizes).
+router.post("/claim/sign", requireAuth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { walletAddress } = req.body;
+
+    if (!walletAddress || !/^0x[0-9a-fA-F]{40}$/.test(walletAddress)) {
+      res.status(400).json({ error: "Invalid request", message: "walletAddress must be a valid EVM address" });
+      return;
+    }
+
+    const emailHash = hashEmail(user.email);
+
+    // Verify there is at least one pending escrow for this user
+    const pendingEscrows = await db
+      .select()
+      .from(escrowsTable)
+      .where(and(eq(escrowsTable.emailHash, emailHash), eq(escrowsTable.status, "pending")));
+
+    if (pendingEscrows.length === 0) {
+      res.status(400).json({ error: "No pending escrows", message: "No pending escrow funds found for your account" });
+      return;
+    }
+
+    // Sign: keccak256(abi.encodePacked(emailHash, walletAddress))
+    // The contract recovers the signer from this message to authorize the claim.
+    const { ethers } = await import("ethers");
+    const messageHash = ethers.solidityPackedKeccak256(
+      ["bytes32", "address"],
+      [emailHash, walletAddress.toLowerCase()],
+    );
+    const signer = getBackendSigner();
+    // signMessage prefixes with "\x19Ethereum Signed Message:\n32" matching ethers.js v6
+    const signature = await signer.signMessage(ethers.getBytes(messageHash));
+
+    const totalPending = pendingEscrows
+      .reduce((sum, e) => sum + parseFloat(e.amount), 0)
+      .toFixed(6);
+
+    res.json({
+      emailHash,
+      walletAddress: walletAddress.toLowerCase(),
+      signature,
+      contractAddress: ESCROW_CONTRACT_ADDRESS_VALUE,
+      totalPendingAmount: totalPending,
+      pendingCount: pendingEscrows.length,
+      message: `Sign and submit the claim transaction in your wallet to receive ${totalPending} USDC`,
+    });
+  } catch (error: any) {
+    req.log.error({ err: error }, "Claim sign error");
+    res.status(500).json({ error: "Internal server error", message: error.message });
+  }
+});
+
+// POST /api/escrow/claim/confirm — called by frontend after on-chain claim tx is mined
+// Marks all pending escrows for the user as claimed and records the tx hash.
+router.post("/claim/confirm", requireAuth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { txHash, walletAddress } = req.body;
+
+    if (!txHash) {
+      res.status(400).json({ error: "Invalid request", message: "txHash is required" });
+      return;
+    }
+
+    const emailHash = hashEmail(user.email);
+
+    const pendingEscrows = await db
+      .select()
+      .from(escrowsTable)
+      .where(and(eq(escrowsTable.emailHash, emailHash), eq(escrowsTable.status, "pending")));
+
+    let totalClaimed = 0;
+    for (const escrow of pendingEscrows) {
+      await db
+        .update(escrowsTable)
+        .set({
+          status: "claimed",
+          recipientUserId: user.userId,
+          claimedAt: new Date(),
+          claimTxHash: txHash,
+        })
+        .where(eq(escrowsTable.id, escrow.id));
+      totalClaimed += parseFloat(escrow.amount);
+    }
+
+    res.json({
+      success: true,
+      claimedCount: pendingEscrows.length,
+      totalClaimed: totalClaimed.toFixed(6),
+      message: `Marked ${pendingEscrows.length} escrow(s) as claimed`,
+    });
+  } catch (error: any) {
+    req.log.error({ err: error }, "Claim confirm error");
+    res.status(500).json({ error: "Internal server error", message: error.message });
+  }
+});
+
 // GET /api/escrow/history - transaction history
 router.get("/history", requireAuth, async (req, res) => {
   try {
