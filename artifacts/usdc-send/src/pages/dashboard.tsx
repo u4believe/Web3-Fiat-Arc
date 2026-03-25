@@ -21,6 +21,8 @@ import {
   Check,
   ShieldCheck,
   ArrowRight,
+  Send,
+  Mail,
 } from "lucide-react";
 import {
   useGetCurrentUser,
@@ -29,6 +31,7 @@ import {
   useGetEscrowHistory,
   useWithdrawCrypto,
   useWithdrawFiat,
+  useSendUSDC,
 } from "@workspace/api-client-react";
 import { useWeb3 } from "@/hooks/use-web3";
 import { cn, formatCurrency, formatAddress } from "@/lib/utils";
@@ -156,7 +159,7 @@ function ClaimProgress({ step }: { step: ClaimStep }) {
 export default function Dashboard() {
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<"history" | "withdraw">("history");
+  const [activeTab, setActiveTab] = useState<"history" | "send" | "withdraw">("history");
   const [withdrawMethod, setWithdrawMethod] = useState<"crypto" | "fiat">("crypto");
 
   const [claimStep, setClaimStep]       = useState<ClaimStep>("idle");
@@ -404,17 +407,23 @@ export default function Dashboard() {
         {/* ── Tabs ─────────────────────────────────────────────────────────── */}
         <motion.div variants={fadeUp} className="bg-white/80 backdrop-blur rounded-3xl shadow-sm border border-border overflow-hidden">
           <div className="flex border-b border-border relative">
-            {(["history", "withdraw"] as const).map((tab) => (
+            {([
+              { id: "history",  label: "History",      icon: Clock },
+              { id: "send",     label: "Send USDC",    icon: Send  },
+              { id: "withdraw", label: "Withdraw",     icon: Wallet },
+            ] as const).map(({ id, label, icon: Icon }) => (
               <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
+                key={id}
+                onClick={() => setActiveTab(id)}
                 className={cn(
-                  "flex-1 py-4 text-center font-semibold transition-colors capitalize relative",
-                  activeTab === tab ? "text-primary" : "text-muted-foreground hover:text-foreground",
+                  "flex-1 py-4 text-center font-semibold transition-colors relative flex items-center justify-center gap-2",
+                  activeTab === id ? "text-primary" : "text-muted-foreground hover:text-foreground",
                 )}
               >
-                {tab === "history" ? "Transaction History" : "Withdraw Funds"}
-                {activeTab === tab && (
+                <Icon className="w-4 h-4" />
+                <span className="hidden sm:inline">{label}</span>
+                <span className="sm:hidden text-xs">{label}</span>
+                {activeTab === id && (
                   <motion.div
                     layoutId="tab-indicator"
                     className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary"
@@ -500,6 +509,20 @@ export default function Dashboard() {
                         })}
                     </motion.div>
                   )}
+                </motion.div>
+              )}
+
+              {/* Send USDC tab */}
+              {activeTab === "send" && (
+                <motion.div
+                  key="send"
+                  variants={fadeIn}
+                  initial="hidden"
+                  animate="show"
+                  exit="hidden"
+                  className="max-w-2xl mx-auto"
+                >
+                  <DashboardSendForm onSuccess={() => setActiveTab("history")} />
                 </motion.div>
               )}
 
@@ -744,5 +767,366 @@ function FiatComingSoon() {
         Powered by <span className="font-semibold text-foreground">Circle's Payout API</span>. Requires Circle KYB approval in production.
       </motion.p>
     </motion.div>
+  );
+}
+
+// ─── Dashboard Send Form ──────────────────────────────────────────────────────
+
+type DashSendStep = "idle" | "approving" | "approved" | "depositing" | "success";
+
+const dashSendSchema = z.object({
+  recipientEmail: z.string().email("Please enter a valid email address"),
+  amount: z
+    .string()
+    .min(1, "Amount is required")
+    .refine((v) => !isNaN(Number(v)) && Number(v) > 0, "Must be a positive number")
+    .refine((v) => Number(v) >= 0.01, "Minimum is $0.01 USDC"),
+});
+
+type DashSendValues = z.infer<typeof dashSendSchema>;
+
+async function confirmSend(escrowId: number, txHash: string) {
+  await fetch(`${BASE}/api/escrow/send/confirm`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ escrowId, txHash }),
+  });
+}
+
+function DashSendStepIndicator({ step }: { step: DashSendStep }) {
+  const steps: { id: DashSendStep; label: string }[] = [
+    { id: "approving",  label: "Approve USDC" },
+    { id: "depositing", label: "Deposit to Escrow" },
+    { id: "success",    label: "Confirmed" },
+  ];
+  return (
+    <div className="flex items-center gap-0 mb-6">
+      {steps.map((s, i) => {
+        const done =
+          (step === "approved"   && i === 0) ||
+          (step === "depositing" && i === 0) ||
+          (step === "success"    && i <= 1);
+        const active =
+          (step === "approving"  && i === 0) ||
+          ((step === "approved" || step === "depositing") && i === 1) ||
+          (step === "success"    && i === 2);
+        return (
+          <div key={s.id} className="flex items-center flex-1">
+            <div className="flex flex-col items-center gap-1 flex-1">
+              <motion.div
+                animate={active ? { scale: [1, 1.12, 1] } : {}}
+                transition={{ repeat: Infinity, duration: 1.5, ease: "easeInOut" }}
+                className={cn(
+                  "w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-all duration-300",
+                  done   ? "bg-green-500 text-white" :
+                  active ? "bg-primary text-white ring-4 ring-primary/20" :
+                           "bg-secondary text-muted-foreground",
+                )}
+              >
+                {done ? <Check className="w-3.5 h-3.5" /> : i + 1}
+              </motion.div>
+              <span className={cn("text-[10px] font-medium whitespace-nowrap", active ? "text-primary" : done ? "text-green-600" : "text-muted-foreground")}>
+                {s.label}
+              </span>
+            </div>
+            {i < steps.length - 1 && (
+              <div className={cn("h-0.5 flex-1 mx-1 rounded-full transition-colors duration-500", done ? "bg-green-400" : "bg-border")} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function DashboardSendForm({ onSuccess }: { onSuccess: () => void }) {
+  const sendMutation = useSendUSDC();
+  const { address, connectWallet, isConnecting, depositToEscrow } = useWeb3();
+
+  const [txStep,       setTxStep]       = useState<DashSendStep>("idle");
+  const [txHash,       setTxHash]       = useState<string | null>(null);
+  const [formError,    setFormError]    = useState<string | null>(null);
+  const [successEmail, setSuccessEmail] = useState("");
+  const [successAmount, setSuccessAmount] = useState("");
+
+  const { register, handleSubmit, reset, formState: { errors } } = useForm<DashSendValues>({
+    resolver: zodResolver(dashSendSchema),
+  });
+
+  const onSubmit = async (data: DashSendValues) => {
+    setFormError(null);
+    try {
+      let walletAddr = address;
+      if (!walletAddr) {
+        walletAddr = await connectWallet();
+        if (!walletAddr) return;
+      }
+      setTxStep("approving");
+      const res = await sendMutation.mutateAsync({
+        data: {
+          recipientEmail: data.recipientEmail.toLowerCase().trim(),
+          amount: data.amount,
+          senderAddress: walletAddr,
+        },
+      });
+      const hash = await depositToEscrow(
+        res.contractAddress,
+        res.usdcAddress,
+        res.emailHash,
+        res.amountWei,
+        () => setTxStep("depositing"),
+      );
+      confirmSend(res.escrowId, hash).catch(console.warn);
+      setTxHash(hash);
+      setSuccessEmail(data.recipientEmail.toLowerCase().trim());
+      setSuccessAmount(data.amount);
+      setTxStep("success");
+    } catch (err: any) {
+      setTxStep("idle");
+      const msg: string = err?.reason ?? err?.info?.error?.message ?? err?.message ?? "Transaction failed.";
+      setFormError(msg.length > 200 ? msg.slice(0, 200) + "…" : msg);
+    }
+  };
+
+  const handleReset = () => {
+    setTxStep("idle");
+    setTxHash(null);
+    setFormError(null);
+    setSuccessEmail("");
+    setSuccessAmount("");
+    reset();
+  };
+
+  const isBusy = txStep !== "idle";
+
+  return (
+    <AnimatePresence mode="wait">
+      {/* ── Success state ── */}
+      {txStep === "success" ? (
+        <motion.div
+          key="success"
+          variants={scaleIn}
+          initial="hidden"
+          animate="show"
+          exit="hidden"
+          className="text-center py-10"
+        >
+          <motion.div
+            initial={{ scale: 0, rotate: -180 }}
+            animate={{ scale: 1, rotate: 0 }}
+            transition={{ type: "spring", stiffness: 260, damping: 20, delay: 0.1 }}
+            className="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-5 shadow-lg shadow-green-500/20"
+          >
+            <CheckCircle2 className="w-10 h-10" />
+          </motion.div>
+
+          <motion.div variants={staggerContainer(0.08)} initial="hidden" animate="show">
+            <motion.h3 variants={fadeUp} className="text-2xl font-bold mb-1">Payment Sent!</motion.h3>
+            <motion.p variants={fadeUp} className="text-muted-foreground text-sm mb-5">
+              <span className="font-semibold text-foreground">${successAmount} USDC</span> locked in escrow for{" "}
+              <span className="font-semibold text-foreground">{successEmail}</span>.
+              They'll receive a notification to claim it.
+            </motion.p>
+
+            {txHash && (
+              <motion.div variants={fadeUp} className="bg-secondary/60 rounded-xl px-4 py-3 mb-6 flex items-center justify-between gap-2 text-left mx-auto max-w-sm">
+                <div className="min-w-0">
+                  <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-0.5 font-semibold">Tx Hash</p>
+                  <p className="font-mono text-xs text-foreground truncate">{txHash}</p>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <CopyButton text={txHash} />
+                  <a href={`${ARC_EXPLORER}${txHash}`} target="_blank" rel="noopener noreferrer" className="p-1 rounded hover:bg-white/20 transition-colors">
+                    <ExternalLink className="w-3.5 h-3.5 opacity-60 hover:opacity-100" />
+                  </a>
+                </div>
+              </motion.div>
+            )}
+
+            <motion.div variants={fadeUp} className="flex items-center justify-center gap-3">
+              <motion.button
+                whileHover={{ scale: 1.03 }}
+                whileTap={{ scale: 0.97 }}
+                onClick={handleReset}
+                className="px-5 py-2.5 rounded-xl bg-secondary text-foreground font-medium hover:bg-secondary/80 transition-colors"
+              >
+                Send Another
+              </motion.button>
+              <motion.button
+                whileHover={{ scale: 1.03 }}
+                whileTap={{ scale: 0.97 }}
+                onClick={onSuccess}
+                className="px-5 py-2.5 rounded-xl bg-primary text-white font-medium hover:bg-primary/90 transition-colors flex items-center gap-2"
+              >
+                <Clock className="w-4 h-4" /> View History
+              </motion.button>
+            </motion.div>
+          </motion.div>
+        </motion.div>
+      ) : (
+        /* ── Form state ── */
+        <motion.div key="form" variants={staggerContainer(0.08, 0)} initial="hidden" animate="show" exit="hidden">
+          {/* Header */}
+          <motion.div variants={fadeUp} className="mb-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-xl font-bold font-display">Send USDC</h3>
+                <p className="text-sm text-muted-foreground mt-0.5">Lock funds in escrow for any email address</p>
+              </div>
+              {/* Wallet status */}
+              {address ? (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="flex items-center gap-2 px-3 py-1.5 bg-green-50 text-green-700 rounded-full text-sm font-medium border border-green-200"
+                >
+                  <motion.div
+                    animate={{ scale: [1, 1.4, 1] }}
+                    transition={{ repeat: Infinity, duration: 1.5 }}
+                    className="w-2 h-2 rounded-full bg-green-500"
+                  />
+                  {formatAddress(address)}
+                </motion.div>
+              ) : (
+                <motion.button
+                  type="button"
+                  onClick={connectWallet}
+                  disabled={isConnecting}
+                  whileHover={{ scale: 1.03 }}
+                  whileTap={{ scale: 0.97 }}
+                  className="flex items-center gap-2 px-4 py-2 bg-secondary text-foreground rounded-xl text-sm font-medium hover:bg-secondary/80 transition-colors disabled:opacity-50"
+                >
+                  <Wallet className="w-4 h-4" />
+                  {isConnecting ? "Connecting…" : "Connect Wallet"}
+                </motion.button>
+              )}
+            </div>
+          </motion.div>
+
+          {/* Step progress during tx */}
+          {isBusy && <DashSendStepIndicator step={txStep} />}
+
+          {/* Error message */}
+          <AnimatePresence>
+            {formError && (
+              <motion.div
+                initial={{ opacity: 0, height: 0, y: -6 }}
+                animate={{ opacity: 1, height: "auto", y: 0 }}
+                exit={{ opacity: 0, height: 0 }}
+                className="flex items-start gap-3 px-4 py-3 mb-5 rounded-xl bg-destructive/10 border border-destructive/20 text-sm text-destructive overflow-hidden"
+              >
+                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                <span>{formError}</span>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
+            {/* Recipient email */}
+            <motion.div variants={fadeUp}>
+              <label className="block text-sm font-medium text-foreground mb-2">
+                <Mail className="w-4 h-4 inline mr-1.5 opacity-60" />
+                Recipient Email
+              </label>
+              <input
+                {...register("recipientEmail")}
+                disabled={isBusy}
+                type="email"
+                autoComplete="off"
+                placeholder="satoshi@example.com"
+                className={cn(
+                  "w-full px-4 py-3 rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all outline-none disabled:opacity-60",
+                  errors.recipientEmail && "border-destructive focus:border-destructive focus:ring-destructive/10",
+                )}
+              />
+              <AnimatePresence>
+                {errors.recipientEmail && (
+                  <motion.p initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="mt-1.5 text-sm text-destructive">
+                    {errors.recipientEmail.message}
+                  </motion.p>
+                )}
+              </AnimatePresence>
+            </motion.div>
+
+            {/* Amount */}
+            <motion.div variants={fadeUp}>
+              <label className="block text-sm font-medium text-foreground mb-2">
+                Amount (USDC)
+              </label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                  <span className="text-muted-foreground font-medium">$</span>
+                </div>
+                <input
+                  {...register("amount")}
+                  disabled={isBusy}
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  placeholder="100.00"
+                  className={cn(
+                    "w-full pl-8 pr-16 py-3 rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all outline-none font-medium disabled:opacity-60",
+                    errors.amount && "border-destructive focus:border-destructive focus:ring-destructive/10",
+                  )}
+                />
+                <div className="absolute inset-y-0 right-0 pr-4 flex items-center pointer-events-none">
+                  <span className="text-muted-foreground font-medium text-sm">USDC</span>
+                </div>
+              </div>
+              <AnimatePresence>
+                {errors.amount && (
+                  <motion.p initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="mt-1.5 text-sm text-destructive">
+                    {errors.amount.message}
+                  </motion.p>
+                )}
+              </AnimatePresence>
+            </motion.div>
+
+            {/* Info note */}
+            <motion.div variants={fadeUp} className="flex items-start gap-3 px-4 py-3 rounded-xl bg-primary/5 border border-primary/10 text-sm text-muted-foreground">
+              <ShieldCheck className="w-4 h-4 mt-0.5 shrink-0 text-primary" />
+              <span>Funds are locked in a smart contract escrow until the recipient signs up and claims them.</span>
+            </motion.div>
+
+            {/* Submit */}
+            <motion.div variants={fadeUp}>
+              <motion.button
+                type="submit"
+                disabled={isBusy}
+                whileHover={!isBusy ? { scale: 1.02, y: -1 } : {}}
+                whileTap={!isBusy ? { scale: 0.98 } : {}}
+                className="w-full relative group flex items-center justify-center gap-2 px-6 py-4 rounded-xl font-bold text-white overflow-hidden bg-primary disabled:opacity-70 disabled:cursor-not-allowed transition-shadow hover:shadow-xl hover:shadow-primary/30"
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-primary to-accent opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
+                <span className="relative z-10 flex items-center gap-2">
+                  {txStep === "approving"  && <><Loader2 className="w-5 h-5 animate-spin" />Approving USDC in wallet…</>}
+                  {(txStep === "approved" || txStep === "depositing") && <><Loader2 className="w-5 h-5 animate-spin" />Depositing to Escrow…</>}
+                  {txStep === "idle" && <>
+                    <Send className="w-5 h-5" />
+                    Lock &amp; Send
+                    <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                  </>}
+                </span>
+              </motion.button>
+
+              <AnimatePresence>
+                {isBusy && (
+                  <motion.p
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="text-center text-xs text-muted-foreground mt-2"
+                  >
+                    {txStep === "approving"
+                      ? "Step 1 of 2 — Approve the USDC spend in your wallet"
+                      : "Step 2 of 2 — Confirm the deposit transaction in your wallet"}
+                  </motion.p>
+                )}
+              </AnimatePresence>
+            </motion.div>
+          </form>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
