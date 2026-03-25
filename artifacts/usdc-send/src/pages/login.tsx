@@ -1,18 +1,17 @@
 import { useState, useRef, useEffect } from "react";
-import { Link, useLocation } from "wouter";
+import { Link } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
-import { Mail, Lock, ArrowRight, Loader2, Send, ShieldCheck, RefreshCw } from "lucide-react";
+import { Mail, Lock, ArrowRight, Loader2, Send, ShieldCheck, RefreshCw, Info } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { AppLayout } from "@/components/layout";
-import { fadeUp, scaleIn, staggerContainer } from "@/lib/motion";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+const IS_DEV = import.meta.env.DEV;
 
 type Step = "credentials" | "otp";
 
 export default function Login() {
-  const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
 
   const [step, setStep]           = useState<Step>("credentials");
@@ -28,7 +27,9 @@ export default function Login() {
   const otpRefs       = useRef<(HTMLInputElement | null)[]>([]);
 
   useEffect(() => {
-    if (step === "otp") otpRefs.current[0]?.focus();
+    if (step === "otp") {
+      setTimeout(() => otpRefs.current[0]?.focus(), 50);
+    }
   }, [step]);
 
   const handleCredentials = async (e: React.FormEvent) => {
@@ -72,7 +73,7 @@ export default function Login() {
     const text = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, 6);
     if (!text) return;
     e.preventDefault();
-    const next = text.split("").concat(Array(6).fill("")).slice(0, 6);
+    const next = [...text.split(""), ...Array(6).fill("")].slice(0, 6);
     setOtp(next);
     otpRefs.current[Math.min(text.length, 5)]?.focus();
   };
@@ -93,7 +94,7 @@ export default function Login() {
       if (!res.ok) throw new Error(json.message ?? "Verification failed");
       localStorage.setItem("token", json.token);
       queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
-      setLocation("/");
+      window.location.href = import.meta.env.BASE_URL || "/";
     } catch (err: any) {
       setError(err.message ?? "Incorrect code. Please try again.");
     } finally {
@@ -114,7 +115,7 @@ export default function Login() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.message ?? "Failed to resend");
       setOtp(["", "", "", "", "", ""]);
-      otpRefs.current[0]?.focus();
+      setTimeout(() => otpRefs.current[0]?.focus(), 50);
     } catch (err: any) {
       setError(err.message ?? "Failed to resend code.");
     } finally {
@@ -130,13 +131,10 @@ export default function Login() {
       </div>
 
       <div className="min-h-[calc(100vh-5rem)] flex items-center justify-center p-4">
-        <motion.div
-          variants={staggerContainer(0.1, 0)}
-          initial="hidden"
-          animate="show"
-          className="w-full max-w-md"
-        >
-          <motion.div variants={fadeUp} className="flex justify-center mb-8">
+        <div className="w-full max-w-md">
+
+          {/* Logo */}
+          <div className="flex justify-center mb-8">
             <motion.div
               animate={{ y: [0, -6, 0] }}
               transition={{ repeat: Infinity, duration: 4, ease: "easeInOut" }}
@@ -144,173 +142,201 @@ export default function Login() {
             >
               <Send className="w-7 h-7" />
             </motion.div>
-          </motion.div>
+          </div>
 
-          <AnimatePresence mode="wait">
-            {step === "credentials" ? (
-              <motion.div key="credentials" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -16 }}>
-                <motion.div variants={fadeUp} className="text-center mb-8">
-                  <h1 className="text-3xl font-display font-bold">Welcome back</h1>
-                  <p className="text-muted-foreground mt-2">Log in to claim and manage your USD.</p>
-                </motion.div>
+          {/* Step panels — no AnimatePresence to avoid blank-screen transition bug */}
+          {step === "credentials" ? (
+            <motion.div
+              key="credentials"
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.25 }}
+            >
+              <div className="text-center mb-8">
+                <h1 className="text-3xl font-display font-bold">Welcome back</h1>
+                <p className="text-muted-foreground mt-2">Log in to claim and manage your USD.</p>
+              </div>
 
-                <motion.div variants={scaleIn} className="glass-panel p-8 rounded-3xl">
-                  <AnimatePresence>
-                    {error && (
-                      <motion.div
-                        initial={{ opacity: 0, height: 0, y: -8 }}
-                        animate={{ opacity: 1, height: "auto", y: 0 }}
-                        exit={{ opacity: 0, height: 0 }}
-                        className="mb-6 p-4 rounded-xl bg-destructive/10 text-destructive text-sm font-medium border border-destructive/20 overflow-hidden"
-                      >
-                        {error}
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
+              <div className="glass-panel p-8 rounded-3xl">
+                <AnimatePresence>
+                  {error && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="mb-6 p-4 rounded-xl bg-destructive/10 text-destructive text-sm font-medium border border-destructive/20 overflow-hidden"
+                    >
+                      {error}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
 
-                  <form onSubmit={handleCredentials} className="space-y-5">
-                    <div>
-                      <label className="block text-sm font-medium text-foreground mb-2">Email</label>
-                      <div className="relative">
-                        <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-muted-foreground">
-                          <Mail className="w-5 h-5" />
-                        </div>
-                        <input
-                          type="email"
-                          value={email}
-                          onChange={e => setEmail(e.target.value)}
-                          className="w-full pl-11 pr-4 py-3 rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all outline-none"
-                          placeholder="you@example.com"
-                          autoComplete="email"
-                          required
-                        />
+                <form onSubmit={handleCredentials} className="space-y-5">
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-2">Email</label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-muted-foreground">
+                        <Mail className="w-5 h-5" />
                       </div>
+                      <input
+                        type="email"
+                        value={email}
+                        onChange={e => setEmail(e.target.value)}
+                        className="w-full pl-11 pr-4 py-3 rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all outline-none"
+                        placeholder="you@example.com"
+                        autoComplete="email"
+                        required
+                      />
                     </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-foreground mb-2">Password</label>
-                      <div className="relative">
-                        <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-muted-foreground">
-                          <Lock className="w-5 h-5" />
-                        </div>
-                        <input
-                          type="password"
-                          value={password}
-                          onChange={e => setPassword(e.target.value)}
-                          className="w-full pl-11 pr-4 py-3 rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all outline-none"
-                          placeholder="••••••••"
-                          autoComplete="current-password"
-                          required
-                        />
-                      </div>
-                    </div>
-
-                    <div className="pt-1">
-                      <motion.button
-                        type="submit"
-                        disabled={isPending}
-                        whileHover={!isPending ? { scale: 1.02, y: -1 } : {}}
-                        whileTap={!isPending ? { scale: 0.98 } : {}}
-                        className="w-full flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl font-bold text-white bg-primary hover:shadow-lg hover:shadow-primary/30 transition-shadow disabled:opacity-70 disabled:cursor-not-allowed"
-                      >
-                        {isPending ? <Loader2 className="w-5 h-5 animate-spin" /> : <>Log In <ArrowRight className="w-5 h-5" /></>}
-                      </motion.button>
-                    </div>
-                  </form>
-
-                  <div className="mt-6 text-center">
-                    <p className="text-sm text-muted-foreground">
-                      Don't have an account?{" "}
-                      <Link href="/register" className="font-semibold text-primary hover:underline">Sign up</Link>
-                    </p>
                   </div>
-                </motion.div>
-              </motion.div>
-            ) : (
-              <motion.div key="otp" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -16 }}>
-                <motion.div variants={fadeUp} className="text-center mb-8">
-                  <h1 className="text-3xl font-display font-bold">Check your email</h1>
-                  <p className="text-muted-foreground mt-2">
-                    We sent a 6-digit code to <span className="font-semibold text-foreground">{sentEmail}</span>
+
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-2">Password</label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-muted-foreground">
+                        <Lock className="w-5 h-5" />
+                      </div>
+                      <input
+                        type="password"
+                        value={password}
+                        onChange={e => setPassword(e.target.value)}
+                        className="w-full pl-11 pr-4 py-3 rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all outline-none"
+                        placeholder="••••••••"
+                        autoComplete="current-password"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <motion.button
+                    type="submit"
+                    disabled={isPending}
+                    whileHover={!isPending ? { scale: 1.02, y: -1 } : {}}
+                    whileTap={!isPending ? { scale: 0.98 } : {}}
+                    className="w-full flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl font-bold text-white bg-primary hover:shadow-lg hover:shadow-primary/30 transition-shadow disabled:opacity-70 disabled:cursor-not-allowed"
+                  >
+                    {isPending
+                      ? <Loader2 className="w-5 h-5 animate-spin" />
+                      : <><span>Log In</span> <ArrowRight className="w-5 h-5" /></>
+                    }
+                  </motion.button>
+                </form>
+
+                <div className="mt-6 text-center">
+                  <p className="text-sm text-muted-foreground">
+                    Don't have an account?{" "}
+                    <Link href="/register" className="font-semibold text-primary hover:underline">Sign up</Link>
                   </p>
-                </motion.div>
+                </div>
+              </div>
+            </motion.div>
+          ) : (
+            <motion.div
+              key="otp"
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.25 }}
+            >
+              <div className="text-center mb-8">
+                <h1 className="text-3xl font-display font-bold">Check your email</h1>
+                <p className="text-muted-foreground mt-2">
+                  We sent a 6-digit code to{" "}
+                  <span className="font-semibold text-foreground">{sentEmail}</span>
+                </p>
+              </div>
 
-                <motion.div variants={scaleIn} className="glass-panel p-8 rounded-3xl">
-                  <div className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-primary/5 border border-primary/10 mb-7">
-                    <ShieldCheck className="w-4 h-4 text-primary shrink-0" />
-                    <p className="text-sm text-muted-foreground">Enter the code to confirm it's you</p>
+              <div className="glass-panel p-8 rounded-3xl">
+                <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-primary/5 border border-primary/10 mb-7">
+                  <ShieldCheck className="w-4 h-4 text-primary shrink-0" />
+                  <p className="text-sm text-muted-foreground">Enter the code to confirm it's you</p>
+                </div>
+
+                {/* Dev-mode hint when SMTP isn't configured */}
+                {IS_DEV && (
+                  <div className="flex items-start gap-2 px-4 py-3 rounded-xl bg-amber-50 border border-amber-200 mb-5 text-sm text-amber-800">
+                    <Info className="w-4 h-4 mt-0.5 shrink-0" />
+                    <span>
+                      <strong>Dev mode:</strong> SMTP not configured — check the{" "}
+                      <strong>API server console logs</strong> for your OTP code.
+                    </span>
                   </div>
+                )}
 
-                  <AnimatePresence>
-                    {error && (
-                      <motion.div
-                        initial={{ opacity: 0, height: 0, y: -8 }}
-                        animate={{ opacity: 1, height: "auto", y: 0 }}
-                        exit={{ opacity: 0, height: 0 }}
-                        className="mb-6 p-4 rounded-xl bg-destructive/10 text-destructive text-sm font-medium border border-destructive/20 overflow-hidden"
-                      >
-                        {error}
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
+                <AnimatePresence>
+                  {error && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="mb-6 p-4 rounded-xl bg-destructive/10 text-destructive text-sm font-medium border border-destructive/20 overflow-hidden"
+                    >
+                      {error}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
 
-                  <form onSubmit={handleVerifyOtp} className="space-y-6">
-                    <div>
-                      <label className="block text-sm font-medium text-foreground mb-4 text-center">Verification Code</label>
-                      <div className="flex items-center justify-center gap-2" onPaste={handleOtpPaste}>
-                        {otp.map((digit, i) => (
-                          <input
-                            key={i}
-                            ref={el => { otpRefs.current[i] = el; }}
-                            type="text"
-                            inputMode="numeric"
-                            maxLength={1}
-                            value={digit}
-                            onChange={e => handleOtpChange(i, e.target.value)}
-                            onKeyDown={e => handleOtpKeyDown(i, e)}
-                            className={cn(
-                              "w-11 h-14 text-center text-xl font-bold rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all outline-none",
-                              digit && "border-primary/60",
-                            )}
-                          />
-                        ))}
-                      </div>
+                <form onSubmit={handleVerifyOtp} className="space-y-6">
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-4 text-center">
+                      Verification Code
+                    </label>
+                    <div className="flex items-center justify-center gap-2" onPaste={handleOtpPaste}>
+                      {otp.map((digit, i) => (
+                        <input
+                          key={i}
+                          ref={el => { otpRefs.current[i] = el; }}
+                          type="text"
+                          inputMode="numeric"
+                          maxLength={1}
+                          value={digit}
+                          onChange={e => handleOtpChange(i, e.target.value)}
+                          onKeyDown={e => handleOtpKeyDown(i, e)}
+                          className={cn(
+                            "w-11 h-14 text-center text-xl font-bold rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all outline-none",
+                            digit && "border-primary/60",
+                          )}
+                        />
+                      ))}
                     </div>
-
-                    <motion.button
-                      type="submit"
-                      disabled={isPending || otp.join("").length < 6}
-                      whileHover={!isPending ? { scale: 1.02, y: -1 } : {}}
-                      whileTap={!isPending ? { scale: 0.98 } : {}}
-                      className="w-full flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl font-bold text-white bg-primary hover:shadow-lg hover:shadow-primary/30 transition-shadow disabled:opacity-70 disabled:cursor-not-allowed"
-                    >
-                      {isPending ? <Loader2 className="w-5 h-5 animate-spin" /> : <>Verify &amp; Sign In <ShieldCheck className="w-5 h-5" /></>}
-                    </motion.button>
-                  </form>
-
-                  <div className="mt-6 text-center space-y-2">
-                    <p className="text-sm text-muted-foreground">Didn't receive it?</p>
-                    <button
-                      type="button"
-                      onClick={handleResend}
-                      disabled={isPending}
-                      className="flex items-center gap-1.5 mx-auto text-sm font-medium text-primary hover:underline disabled:opacity-50"
-                    >
-                      <RefreshCw className="w-3.5 h-3.5" /> Resend code
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => { setStep("credentials"); setError(""); setOtp(["", "", "", "", "", ""]); }}
-                      className="block mx-auto text-sm text-muted-foreground hover:text-foreground transition-colors"
-                    >
-                      ← Back to login
-                    </button>
                   </div>
-                </motion.div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </motion.div>
+
+                  <motion.button
+                    type="submit"
+                    disabled={isPending || otp.join("").length < 6}
+                    whileHover={!isPending ? { scale: 1.02, y: -1 } : {}}
+                    whileTap={!isPending ? { scale: 0.98 } : {}}
+                    className="w-full flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl font-bold text-white bg-primary hover:shadow-lg hover:shadow-primary/30 transition-shadow disabled:opacity-70 disabled:cursor-not-allowed"
+                  >
+                    {isPending
+                      ? <Loader2 className="w-5 h-5 animate-spin" />
+                      : <><span>Verify &amp; Sign In</span> <ShieldCheck className="w-5 h-5" /></>
+                    }
+                  </motion.button>
+                </form>
+
+                <div className="mt-6 text-center space-y-2">
+                  <p className="text-sm text-muted-foreground">Didn't receive it?</p>
+                  <button
+                    type="button"
+                    onClick={handleResend}
+                    disabled={isPending}
+                    className="flex items-center gap-1.5 mx-auto text-sm font-medium text-primary hover:underline disabled:opacity-50"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" /> Resend code
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setStep("credentials"); setError(""); setOtp(["", "", "", "", "", ""]); }}
+                    className="block mx-auto text-sm text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    ← Back to login
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+        </div>
       </div>
     </AppLayout>
   );

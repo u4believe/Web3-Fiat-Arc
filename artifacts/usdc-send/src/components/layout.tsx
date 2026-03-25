@@ -15,7 +15,7 @@ export function Navbar() {
   const handleLogout = () => {
     localStorage.removeItem("token");
     queryClient.clear();
-    window.location.href = "/";
+    window.location.href = import.meta.env.BASE_URL || "/";
   };
 
   return (
