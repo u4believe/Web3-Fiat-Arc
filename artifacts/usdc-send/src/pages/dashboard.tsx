@@ -19,6 +19,7 @@ import {
   Copy,
   Check,
   ShieldCheck,
+  ArrowRight,
 } from "lucide-react";
 import {
   useGetCurrentUser,
@@ -468,22 +469,32 @@ export default function Dashboard() {
             {activeTab === "withdraw" && (
               <div className="max-w-2xl mx-auto">
                 <div className="flex gap-2 p-1 bg-secondary rounded-xl mb-8">
-                  {(["crypto", "fiat"] as const).map((method) => (
-                    <button
-                      key={method}
-                      onClick={() => setWithdrawMethod(method)}
-                      className={cn(
-                        "flex-1 py-2 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 transition-all",
-                        withdrawMethod === method
-                          ? "bg-white text-foreground shadow-sm"
-                          : "text-muted-foreground hover:text-foreground",
-                      )}
-                    >
-                      {method === "crypto"
-                        ? <><Wallet className="w-4 h-4" /> Crypto Wallet</>
-                        : <><Building2 className="w-4 h-4" /> Bank Transfer</>}
-                    </button>
-                  ))}
+                  <button
+                    onClick={() => setWithdrawMethod("crypto")}
+                    className={cn(
+                      "flex-1 py-2 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 transition-all",
+                      withdrawMethod === "crypto"
+                        ? "bg-white text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <Wallet className="w-4 h-4" /> Crypto Wallet
+                  </button>
+                  <button
+                    onClick={() => setWithdrawMethod("fiat")}
+                    className={cn(
+                      "flex-1 py-2 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 transition-all",
+                      withdrawMethod === "fiat"
+                        ? "bg-white text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <Building2 className="w-4 h-4" />
+                    Bank Transfer
+                    <span className="ml-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 leading-none">
+                      SOON
+                    </span>
+                  </button>
                 </div>
                 {withdrawMethod === "crypto" && (
                   <CryptoWithdrawalForm
@@ -491,12 +502,7 @@ export default function Dashboard() {
                     maxAmount={balance?.claimedBalance || "0"}
                   />
                 )}
-                {withdrawMethod === "fiat" && (
-                  <FiatWithdrawalForm
-                    mutation={withdrawFiatMutation}
-                    maxAmount={balance?.claimedBalance || "0"}
-                  />
-                )}
+                {withdrawMethod === "fiat" && <FiatComingSoon />}
               </div>
             )}
           </div>
@@ -580,83 +586,80 @@ function CryptoWithdrawalForm({ mutation, maxAmount }: { mutation: any; maxAmoun
   );
 }
 
-function FiatWithdrawalForm({ mutation, maxAmount }: { mutation: any; maxAmount: string }) {
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  const schema = z.object({
-    accountHolderName: z.string().min(2, "Name is required"),
-    bankAccountNumber: z.string().min(5, "Account number is required"),
-    routingNumber: z.string().min(5, "Routing number is required"),
-    amount: z
-      .string()
-      .refine((v) => Number(v) > 0, "Amount must be positive")
-      .refine((v) => Number(v) <= Number(maxAmount), `Max available: $${maxAmount}`),
-  });
-
-  const { register, handleSubmit, formState: { errors }, reset } = useForm({ resolver: zodResolver(schema) });
-
-  const onSubmit = async (data: any) => {
-    setSuccessMsg(null);
-    setErrorMsg(null);
-    try {
-      await mutation.mutateAsync({ data: { ...data, country: "US" } });
-      setSuccessMsg("Wire transfer initiated. Funds typically arrive within 1–2 business days.");
-      reset();
-    } catch (e: any) {
-      setErrorMsg(e?.message || "Transfer failed. Please try again.");
-    }
-  };
+function FiatComingSoon() {
+  const steps = [
+    {
+      icon: <Wallet className="w-5 h-5" />,
+      label: "Claim USDC",
+      desc: "Your claimed USDC balance transfers to the platform wallet",
+      color: "bg-blue-50 text-blue-600 border-blue-200",
+    },
+    {
+      icon: <ArrowRight className="w-5 h-5" />,
+      label: "Circle converts",
+      desc: "Circle's Payout API converts USDC to USD at 1:1 peg",
+      color: "bg-violet-50 text-violet-600 border-violet-200",
+    },
+    {
+      icon: <Building2 className="w-5 h-5" />,
+      label: "Wire to bank",
+      desc: "USD arrives in your bank account within 1–3 business days",
+      color: "bg-green-50 text-green-600 border-green-200",
+    },
+  ];
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
-      {successMsg && (
-        <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-green-50 border border-green-200 text-green-700 text-sm">
-          <CheckCircle2 className="w-4 h-4 shrink-0" />
-          {successMsg}
-        </div>
-      )}
-      {errorMsg && <InlineError message={errorMsg} />}
-      <div>
-        <label className="block text-sm font-medium mb-2">Account Holder Name</label>
-        <input {...register("accountHolderName")} className="w-full px-4 py-3 rounded-xl border-2 border-border focus:border-primary outline-none transition-colors" />
-        {errors.accountHolderName && <p className="text-destructive text-sm mt-1">{errors.accountHolderName.message as string}</p>}
+    <div className="flex flex-col items-center text-center py-4 space-y-8">
+      {/* Badge */}
+      <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 text-sm font-semibold">
+        <Clock className="w-4 h-4" />
+        Coming Soon
       </div>
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label className="block text-sm font-medium mb-2">Routing Number</label>
-          <input {...register("routingNumber")} className="w-full px-4 py-3 rounded-xl border-2 border-border focus:border-primary outline-none transition-colors" />
-          {errors.routingNumber && <p className="text-destructive text-sm mt-1">{errors.routingNumber.message as string}</p>}
-        </div>
-        <div>
-          <label className="block text-sm font-medium mb-2">Account Number</label>
-          <input {...register("bankAccountNumber")} className="w-full px-4 py-3 rounded-xl border-2 border-border focus:border-primary outline-none transition-colors" />
-          {errors.bankAccountNumber && <p className="text-destructive text-sm mt-1">{errors.bankAccountNumber.message as string}</p>}
-        </div>
+
+      {/* Headline */}
+      <div className="space-y-2 max-w-sm">
+        <h3 className="text-2xl font-bold text-foreground">Send USD to Your Bank</h3>
+        <p className="text-muted-foreground text-sm leading-relaxed">
+          Withdraw your USDC balance as real USD directly to your bank account — no crypto wallet needed on your end.
+        </p>
       </div>
-      <div>
-        <label className="block text-sm font-medium mb-2">
-          Amount to Withdraw <span className="text-muted-foreground font-normal">(max {formatCurrency(maxAmount)})</span>
-        </label>
-        <div className="relative">
-          <span className="absolute left-4 inset-y-0 flex items-center text-muted-foreground">$</span>
-          <input
-            {...register("amount")}
-            type="number"
-            step="0.01"
-            className="w-full pl-8 pr-12 py-3 rounded-xl border-2 border-border focus:border-primary outline-none transition-colors"
-          />
-          <span className="absolute right-4 inset-y-0 flex items-center text-muted-foreground text-sm">USD</span>
-        </div>
-        {errors.amount && <p className="text-destructive text-sm mt-1">{errors.amount.message as string}</p>}
+
+      {/* Steps */}
+      <div className="w-full max-w-md space-y-3 text-left">
+        {steps.map((step, i) => (
+          <div
+            key={i}
+            className={cn(
+              "flex items-start gap-4 p-4 rounded-2xl border",
+              step.color.split(" ").slice(0, 2).join(" "),
+              "border-" + step.color.split(" ")[2].replace("border-", ""),
+            )}
+          >
+            <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center shrink-0", step.color.split(" ").slice(0, 2).join(" "))}>
+              {step.icon}
+            </div>
+            <div>
+              <p className="font-semibold text-sm text-foreground">{step.label}</p>
+              <p className="text-muted-foreground text-xs mt-0.5 leading-relaxed">{step.desc}</p>
+            </div>
+          </div>
+        ))}
       </div>
+
+      {/* Disabled button */}
       <button
-        type="submit"
-        disabled={mutation.isPending}
-        className="w-full bg-primary text-white font-bold py-4 rounded-xl flex items-center justify-center gap-2 hover:bg-primary/90 transition-colors disabled:opacity-70"
+        disabled
+        className="w-full max-w-md bg-muted text-muted-foreground font-bold py-4 rounded-xl flex items-center justify-center gap-2 cursor-not-allowed opacity-60"
       >
-        {mutation.isPending ? <Loader2 className="w-5 h-5 animate-spin" /> : "Initiate Wire Transfer"}
+        <Building2 className="w-5 h-5" />
+        Initiate Wire Transfer — Coming Soon
       </button>
-    </form>
+
+      <p className="text-xs text-muted-foreground max-w-sm">
+        Powered by{" "}
+        <span className="font-semibold text-foreground">Circle's Payout API</span>.
+        Requires Circle KYB approval in production.
+      </p>
+    </div>
   );
 }
