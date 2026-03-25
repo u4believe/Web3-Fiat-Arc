@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { db, escrowsTable, usersTable } from "@workspace/db";
+import { db, escrowsTable, usersTable, escrowBalancesTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth } from "../lib/auth.js";
 import {
@@ -354,29 +354,49 @@ router.get("/history", requireAuth, async (req, res) => {
 });
 
 // GET /api/escrow/balance
+// Phase 6: reads escrow_balances (blockchain-indexed), escrows (DB-tracked pending),
+// and users.claimed_balance (backend-credited after claim). 1 USDC = 1 USD.
 router.get("/balance", requireAuth, async (req, res) => {
   try {
     const user = (req as any).user;
     const emailHash = hashEmail(user.email);
 
-    const [dbUser, pendingEscrows] = await Promise.all([
+    const [dbUser, pendingEscrows, onChainRow] = await Promise.all([
+      // Internal credited balance (set when backend executes a claim)
       db.select().from(usersTable).where(eq(usersTable.id, user.userId)).limit(1),
+      // DB-tracked pending escrows (sent via our app, awaiting claim)
       db.select().from(escrowsTable).where(
-        and(
-          eq(escrowsTable.emailHash, emailHash),
-          eq(escrowsTable.status, "pending")
-        )
+        and(eq(escrowsTable.emailHash, emailHash), eq(escrowsTable.status, "pending"))
       ),
+      // On-chain balance from the blockchain indexer (Deposited − Claimed events)
+      db.select().from(escrowBalancesTable).where(eq(escrowBalancesTable.emailHash, emailHash)).limit(1),
     ]);
 
-    const claimedBalance = parseFloat(dbUser[0]?.claimedBalance || "0");
+    // On-chain USDC held by the contract for this email hash
+    const onChainUsdcBalance = parseFloat(onChainRow[0]?.amount ?? "0");
+
+    // Internal balance credited by the backend after successful claims
+    const claimedBalance = parseFloat(dbUser[0]?.claimedBalance ?? "0");
+
+    // Pending deposits tracked in our DB (may overlap with on-chain for new txs)
     const pendingBalance = pendingEscrows.reduce((sum, e) => sum + parseFloat(e.amount), 0);
-    const usdEquivalent = (claimedBalance + pendingBalance).toFixed(6);
+
+    // USD equivalent: 1 USDC = 1 USD (USDC is a stablecoin pegged to USD)
+    // usdBalance = on-chain held + internally credited
+    const usdBalance = (onChainUsdcBalance + claimedBalance).toFixed(6);
 
     res.json({
+      // On-chain data (from indexer → escrow_balances)
+      onChainUsdcBalance: onChainUsdcBalance.toFixed(6),
+      onChainLastUpdated: onChainRow[0]?.lastUpdated ?? null,
+
+      // Off-chain data (from our DB)
       claimedBalance: claimedBalance.toFixed(6),
       pendingBalance: pendingBalance.toFixed(6),
-      usdEquivalent,
+
+      // USD totals (1 USDC = 1 USD)
+      usdBalance,
+      usdEquivalent: usdBalance, // backward compat alias
     });
   } catch (error: any) {
     req.log.error({ err: error }, "Get balance error");

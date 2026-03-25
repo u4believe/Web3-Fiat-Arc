@@ -35,6 +35,19 @@ import { AppLayout } from "@/components/layout";
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 const ARC_EXPLORER = "https://explorer.arc.io/tx/";
 
+// Extended balance type — adds Phase 6 on-chain fields not yet in the generated schema
+interface FullBalance {
+  // On-chain (blockchain indexer → escrow_balances)
+  onChainUsdcBalance: string;
+  onChainLastUpdated: string | null;
+  // Off-chain (backend DB)
+  claimedBalance: string;
+  pendingBalance: string;
+  // USD totals (1 USDC = 1 USD)
+  usdBalance: string;
+  usdEquivalent: string;
+}
+
 type ClaimStep = "idle" | "connecting" | "signing" | "claiming" | "success" | "error";
 
 // ─── Small utilities ────────────────────────────────────────────────────────
@@ -130,6 +143,7 @@ export default function Dashboard() {
     useGetCurrentUser({ query: { retry: false } });
   const { data: balance, refetch: refetchBalance } =
     useGetUserBalance({ query: { enabled: !!user } });
+  const bal = balance as FullBalance | undefined;
   const { data: pending, refetch: refetchPending } =
     useGetPendingEscrows({ query: { enabled: !!user } });
   const { data: history } =
@@ -236,17 +250,44 @@ export default function Dashboard() {
         {/* ── Balance cards ── */}
         <div className="grid md:grid-cols-2 gap-6">
 
-          {/* Claimed balance */}
+          {/* USD Balance card — reads from escrow_balances (on-chain) + users.claimed_balance */}
           <div className="glass-panel p-6 rounded-3xl bg-gradient-to-br from-primary to-accent text-white border-none relative overflow-hidden">
             <div className="absolute top-0 right-0 w-48 h-48 bg-white/10 rounded-full blur-2xl -translate-y-1/2 translate-x-1/4 pointer-events-none" />
+
             <div className="flex items-center gap-3 mb-4 text-white/80 font-medium">
               <DollarSign className="w-5 h-5" />
-              Claimed Balance
+              USD Balance
             </div>
-            <div className="text-4xl lg:text-5xl font-display font-bold tracking-tight mb-2">
-              {balance ? formatCurrency(balance.claimedBalance) : "$0.00"}
+
+            {/* Primary figure — total USD (1 USDC = 1 USD) */}
+            <div className="text-4xl lg:text-5xl font-display font-bold tracking-tight mb-1">
+              {bal ? formatCurrency(bal.usdBalance) : "$0.00"}
             </div>
-            <div className="text-white/70 text-sm">Available to withdraw instantly</div>
+            <div className="text-white/70 text-sm mb-5">
+              1 USDC = 1 USD · stablecoin peg
+            </div>
+
+            {/* Breakdown rows */}
+            <div className="space-y-2 border-t border-white/20 pt-4">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-white/70 flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-300 inline-block" />
+                  On-chain escrow
+                </span>
+                <span className="font-semibold tabular-nums">
+                  {bal ? formatCurrency(bal.onChainUsdcBalance) : "$0.00"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-white/70 flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-300 inline-block" />
+                  Credited balance
+                </span>
+                <span className="font-semibold tabular-nums">
+                  {bal ? formatCurrency(bal.claimedBalance) : "$0.00"}
+                </span>
+              </div>
+            </div>
           </div>
 
           {/* Pending escrow */}
