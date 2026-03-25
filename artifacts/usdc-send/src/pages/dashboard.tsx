@@ -50,7 +50,7 @@ interface FullBalance {
   usdEquivalent: string;
 }
 
-type ClaimStep = "idle" | "connecting" | "signing" | "claiming" | "success" | "error";
+type ClaimStep = "idle" | "processing" | "success" | "error";
 
 // ─── Animated counter ─────────────────────────────────────────────────────────
 
@@ -113,43 +113,19 @@ function InlineError({ message }: { message: string }) {
 
 // ─── Claim step progress ──────────────────────────────────────────────────────
 
-const CLAIM_STEPS = [
-  { id: "connecting", label: "Connect Wallet" },
-  { id: "signing",   label: "Get Signature" },
-  { id: "claiming",  label: "Claim On-chain" },
-  { id: "success",   label: "Done" },
-] as const;
-
 function ClaimProgress({ step }: { step: ClaimStep }) {
-  const activeIdx = CLAIM_STEPS.findIndex((s) => s.id === step);
   return (
-    <div className="flex items-center gap-1 my-4">
-      {CLAIM_STEPS.map((s, i) => {
-        const done   = i < activeIdx || step === "success";
-        const active = i === activeIdx && step !== "success";
-        return (
-          <div key={s.id} className="flex items-center flex-1">
-            <div className="flex flex-col items-center gap-1 flex-1">
-              <motion.div
-                animate={active ? { scale: [1, 1.15, 1] } : {}}
-                transition={{ repeat: Infinity, duration: 1.4 }}
-                className={cn(
-                  "w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold transition-all",
-                  done ? "bg-green-500 text-white" : active ? "bg-primary text-white ring-2 ring-primary/30" : "bg-secondary text-muted-foreground",
-                )}
-              >
-                {done ? <Check className="w-3 h-3" /> : i + 1}
-              </motion.div>
-              <span className={cn("text-[9px] font-medium whitespace-nowrap", active ? "text-primary" : done ? "text-green-600" : "text-muted-foreground")}>
-                {s.label}
-              </span>
-            </div>
-            {i < CLAIM_STEPS.length - 1 && (
-              <div className={cn("h-0.5 flex-1 mx-0.5 rounded-full transition-colors duration-500", i < activeIdx || step === "success" ? "bg-green-400" : "bg-border")} />
-            )}
-          </div>
-        );
-      })}
+    <div className="flex items-center gap-3 my-4">
+      <motion.div
+        animate={{ rotate: step === "processing" ? 360 : 0 }}
+        transition={{ repeat: step === "processing" ? Infinity : 0, duration: 1, ease: "linear" }}
+      >
+        <Loader2 className={cn("w-4 h-4", step === "processing" ? "text-primary" : "text-green-500")} />
+      </motion.div>
+      <span className="text-sm font-medium text-primary">
+        {step === "processing" && "Claiming your funds via Circle…"}
+        {step === "success" && "Claimed successfully!"}
+      </span>
     </div>
   );
 }
@@ -166,8 +142,6 @@ export default function Dashboard() {
   const [claimError, setClaimError]     = useState<string | null>(null);
   const [claimTxHash, setClaimTxHash]   = useState<string | null>(null);
   const [claimTotal, setClaimTotal]     = useState<string | null>(null);
-
-  const { address, connectWallet, claimFromEscrow } = useWeb3();
 
   const { data: user, isLoading: isUserLoading, isError: isUserError } =
     useGetCurrentUser({ query: { retry: false } });
@@ -201,45 +175,33 @@ export default function Dashboard() {
     );
   }
 
+  // Wallet-free server-side claim — uses the platform's Circle-managed backend wallet.
+  // No MetaMask or browser extension required.
   const handleClaim = async () => {
     setClaimError(null);
     setClaimTxHash(null);
+    setClaimTotal(null);
+    setClaimStep("processing");
     try {
-      let walletAddr = address;
-      if (!walletAddr) {
-        setClaimStep("connecting");
-        walletAddr = await connectWallet();
-        if (!walletAddr) { setClaimStep("idle"); return; }
-      }
-      setClaimStep("signing");
       const jwt = localStorage.getItem("token");
       const authHeader = jwt ? { Authorization: `Bearer ${jwt}` } : {};
-      const signRes = await fetch(`${BASE}/api/escrow/claim/sign`, {
+      const res = await fetch(`${BASE}/api/escrow/claim/auto`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeader },
-        body: JSON.stringify({ walletAddress: walletAddr }),
       });
-      if (!signRes.ok) {
-        const err = await signRes.json().catch(() => ({}));
-        throw new Error(err.message || "Failed to get backend signature");
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || "Claim failed");
       }
-      const { emailHash, signature, contractAddress, totalPendingAmount, nonce } = await signRes.json();
-      setClaimTotal(totalPendingAmount);
-      setClaimStep("claiming");
-      const txHash = await claimFromEscrow(contractAddress, emailHash, walletAddr, signature);
-      fetch(`${BASE}/api/escrow/claim/confirm`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeader },
-        body: JSON.stringify({ txHash, walletAddress: walletAddr, nonce }),
-      }).catch(console.warn);
-      setClaimTxHash(txHash);
+      const data = await res.json();
+      setClaimTotal(data.totalClaimed);
+      if (data.txHash) setClaimTxHash(data.txHash);
       setClaimStep("success");
       refetchBalance();
       refetchPending();
       queryClient.invalidateQueries({ queryKey: ["/api/escrow/history"] });
     } catch (err: any) {
-      const msg = err?.reason ?? err?.info?.error?.message ?? err?.message ?? "Claim failed.";
-      setClaimError(msg.length > 200 ? msg.slice(0, 200) + "…" : msg);
+      setClaimError(err?.message ?? "Claim failed. Please try again.");
       setClaimStep("error");
     }
   };
@@ -252,7 +214,8 @@ export default function Dashboard() {
   };
 
   const hasPending  = Number(pending?.totalPendingAmount ?? 0) > 0;
-  const isClaiming  = claimStep !== "idle" && claimStep !== "success" && claimStep !== "error";
+  const isClaiming  = claimStep === "processing";
+  const circleWallet = (user as any)?.circleWalletAddress as string | undefined;
 
   return (
     <AppLayout>
@@ -360,14 +323,6 @@ export default function Dashboard() {
             </div>
 
             {isClaiming && <ClaimProgress step={claimStep} />}
-            {isClaiming && (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-center gap-2 text-sm text-primary mt-1">
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                {claimStep === "connecting" && "Connecting wallet…"}
-                {claimStep === "signing"    && "Requesting backend authorization…"}
-                {claimStep === "claiming"   && "Confirm the transaction in your wallet…"}
-              </motion.div>
-            )}
 
             <AnimatePresence>
               {claimStep === "success" && (
@@ -403,6 +358,39 @@ export default function Dashboard() {
             </AnimatePresence>
           </motion.div>
         </div>
+
+        {/* ── Circle Wallet ─────────────────────────────────────────────── */}
+        {circleWallet && (
+          <motion.div
+            variants={fadeUp}
+            className="glass-panel p-4 rounded-2xl flex items-center justify-between gap-4 bg-gradient-to-r from-violet-50/80 to-blue-50/80 border border-violet-100"
+          >
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-500 to-blue-500 flex items-center justify-center shrink-0 shadow-lg shadow-violet-200">
+                <ShieldCheck className="w-4 h-4 text-white" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-violet-700 mb-0.5 flex items-center gap-1.5">
+                  Circle Developer Controlled Wallet
+                  <span className="px-1.5 py-0.5 rounded-full bg-violet-100 text-[10px] font-bold text-violet-600">Wallet-Free</span>
+                </p>
+                <p className="font-mono text-xs text-muted-foreground truncate">{circleWallet}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <CopyButton text={circleWallet} />
+              <a
+                href={`https://amoy.polygonscan.com/address/${circleWallet}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-1 rounded hover:bg-secondary transition-colors"
+                title="View on explorer"
+              >
+                <ExternalLink className="w-3.5 h-3.5 text-muted-foreground" />
+              </a>
+            </div>
+          </motion.div>
+        )}
 
         {/* ── Tabs ─────────────────────────────────────────────────────────── */}
         <motion.div variants={fadeUp} className="bg-white/80 backdrop-blur rounded-3xl shadow-sm border border-border overflow-hidden">
@@ -574,7 +562,7 @@ export default function Dashboard() {
                   <AnimatePresence mode="wait">
                     {withdrawMethod === "crypto" ? (
                       <motion.div key="crypto" variants={scaleIn} initial="hidden" animate="show" exit="hidden">
-                        <CryptoWithdrawalForm mutation={withdrawCryptoMutation} maxAmount={balance?.claimedBalance || "0"} />
+                        <CryptoWithdrawalForm mutation={withdrawCryptoMutation} maxAmount={balance?.claimedBalance || "0"} circleWalletAddress={circleWallet} />
                       </motion.div>
                     ) : (
                       <motion.div key="fiat" variants={scaleIn} initial="hidden" animate="show" exit="hidden">
@@ -594,7 +582,7 @@ export default function Dashboard() {
 
 // ─── Withdrawal sub-forms ─────────────────────────────────────────────────────
 
-function CryptoWithdrawalForm({ mutation, maxAmount }: { mutation: any; maxAmount: string }) {
+function CryptoWithdrawalForm({ mutation, maxAmount, circleWalletAddress }: { mutation: any; maxAmount: string; circleWalletAddress?: string }) {
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [errorMsg,   setErrorMsg]   = useState<string | null>(null);
 
@@ -606,7 +594,7 @@ function CryptoWithdrawalForm({ mutation, maxAmount }: { mutation: any; maxAmoun
       .refine((v) => Number(v) <= Number(maxAmount), `Max available: $${maxAmount}`),
   });
 
-  const { register, handleSubmit, formState: { errors }, reset } = useForm({ resolver: zodResolver(schema) });
+  const { register, handleSubmit, formState: { errors }, reset, setValue } = useForm({ resolver: zodResolver(schema) });
 
   const onSubmit = async (data: any) => {
     setSuccessMsg(null);
@@ -644,7 +632,19 @@ function CryptoWithdrawalForm({ mutation, maxAmount }: { mutation: any; maxAmoun
       </AnimatePresence>
 
       <motion.div variants={fadeUp}>
-        <label className="block text-sm font-medium text-foreground mb-2">Destination Wallet Address</label>
+        <div className="flex items-center justify-between mb-2">
+          <label className="block text-sm font-medium text-foreground">Destination Wallet Address</label>
+          {circleWalletAddress && (
+            <button
+              type="button"
+              onClick={() => setValue("walletAddress", circleWalletAddress, { shouldValidate: true })}
+              className="text-xs font-semibold text-violet-600 hover:text-violet-700 flex items-center gap-1 transition-colors"
+            >
+              <ShieldCheck className="w-3 h-3" />
+              Use my Circle wallet
+            </button>
+          )}
+        </div>
         <input
           {...register("walletAddress")}
           placeholder="0x…"

@@ -57,8 +57,10 @@ artifacts-monorepo/
 - `RPC_URL` — Testnet RPC endpoint (ARC Network testnet)
 - `ESCROW_CONTRACT_ADDRESS` — Deployed escrow contract address
 - `BACKEND_SIGNER_PRIVATE_KEY` — Private key for backend-initiated claims
-- `CIRCLE_API_KEY` — Circle sandbox API key
-- `CIRCLE_API_BASE_URL` — Circle API base URL
+- `CIRCLE_API_KEY` — Circle Developer Controlled Wallets API key (sandbox)
+- `CIRCLE_API_BASE_URL` — Circle API base URL (default: sandbox)
+- `CIRCLE_ENTITY_SECRET` — 32-byte hex entity secret for Circle DCW (auto-generated; register with Circle console for production)
+- `CIRCLE_WALLET_SET_ID` — Circle wallet set ID (auto-created on first wallet provisioning)
 - `BACKEND_TRUSTED_SIGNER` — Trusted signer address
 - `USDC_ADDRESS` — USDC token contract address
 - `JWT_SECRET` — Strong random secret (min 32 chars); **required in production**
@@ -66,7 +68,7 @@ artifacts-monorepo/
 
 ## Database Schema
 
-- `users` — Email, password hash, name, wallet address, claimed USDC balance
+- `users` — Email, password hash, name, wallet address, Circle wallet ID + address, claimed USDC balance
 - `escrows` — Sender address, recipient email + hash, amount, status, tx hashes
 - `withdrawals` — Withdrawal records (crypto/fiat) with status tracking
 - `escrow_balances` — On-chain balance aggregates from blockchain indexer
@@ -82,7 +84,8 @@ artifacts-monorepo/
 - `POST /api/escrow/send` — Prepare escrow transaction (returns emailHash + contract info)
 - `POST /api/escrow/send/confirm` — Confirm escrow tx after frontend sends it
 - `GET /api/escrow/pending` — Get pending escrows for current user
-- `POST /api/escrow/claim` — Claim pending escrows
+- `POST /api/escrow/claim` — Claim pending escrows (legacy, requires wallet address)
+- `POST /api/escrow/claim/auto` — **Wallet-free** server-side claim; no MetaMask needed
 - `GET /api/escrow/history` — Transaction history
 - `GET /api/escrow/balance` — User balance (claimed + pending)
 - `POST /api/withdraw/crypto` — Withdraw USDC to wallet

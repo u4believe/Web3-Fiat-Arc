@@ -4,6 +4,7 @@ import { db, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { generateToken, requireAuth } from "../lib/auth.js";
 import { hashEmail } from "../lib/escrow.js";
+import { createUserCircleWallet } from "../lib/circle.js";
 import {
   RegisterUserBody,
   LoginUserBody,
@@ -39,6 +40,18 @@ router.post("/register", async (req, res) => {
       name,
     }).returning();
 
+    // Provision a Circle Developer Controlled Wallet asynchronously (don't block response)
+    (async () => {
+      try {
+        const { walletId, address } = await createUserCircleWallet(user.id);
+        await db.update(usersTable)
+          .set({ circleWalletId: walletId, circleWalletAddress: address })
+          .where(eq(usersTable.id, user.id));
+      } catch (e: any) {
+        console.warn(`[Circle] Wallet provisioning failed for user ${user.id}:`, e?.message || e);
+      }
+    })();
+
     const token = generateToken({ userId: user.id, email: user.email });
 
     res.status(201).json({
@@ -48,6 +61,7 @@ router.post("/register", async (req, res) => {
         email: user.email,
         name: user.name,
         walletAddress: user.walletAddress,
+        circleWalletAddress: user.circleWalletAddress,
         createdAt: user.createdAt,
       },
     });
@@ -89,6 +103,20 @@ router.post("/login", async (req, res) => {
 
     const token = generateToken({ userId: user.id, email: user.email });
 
+    // Backfill Circle wallet for existing users who signed up before this feature
+    if (!user.circleWalletAddress) {
+      (async () => {
+        try {
+          const { walletId, address } = await createUserCircleWallet(user.id);
+          await db.update(usersTable)
+            .set({ circleWalletId: walletId, circleWalletAddress: address })
+            .where(eq(usersTable.id, user.id));
+        } catch (e: any) {
+          console.warn(`[Circle] Wallet backfill failed for user ${user.id}:`, e?.message || e);
+        }
+      })();
+    }
+
     res.json({
       token,
       user: {
@@ -96,6 +124,7 @@ router.post("/login", async (req, res) => {
         email: user.email,
         name: user.name,
         walletAddress: user.walletAddress,
+        circleWalletAddress: user.circleWalletAddress,
         createdAt: user.createdAt,
       },
     });
@@ -114,11 +143,26 @@ router.get("/me", requireAuth, async (req, res) => {
       return;
     }
 
+    // Backfill Circle wallet if missing
+    if (!dbUser.circleWalletAddress) {
+      (async () => {
+        try {
+          const { walletId, address } = await createUserCircleWallet(dbUser.id);
+          await db.update(usersTable)
+            .set({ circleWalletId: walletId, circleWalletAddress: address })
+            .where(eq(usersTable.id, dbUser.id));
+        } catch (e: any) {
+          console.warn(`[Circle] Wallet backfill failed for user ${dbUser.id}:`, e?.message || e);
+        }
+      })();
+    }
+
     res.json({
       id: dbUser.id,
       email: dbUser.email,
       name: dbUser.name,
       walletAddress: dbUser.walletAddress,
+      circleWalletAddress: dbUser.circleWalletAddress,
       createdAt: dbUser.createdAt,
     });
   } catch (error: any) {

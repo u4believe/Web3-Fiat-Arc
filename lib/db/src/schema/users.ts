@@ -9,6 +9,8 @@ export const usersTable = pgTable("users", {
   passwordHash: text("password_hash").notNull(),
   name: text("name").notNull(),
   walletAddress: text("wallet_address"),
+  circleWalletId: text("circle_wallet_id"),
+  circleWalletAddress: text("circle_wallet_address"),
   claimedBalance: decimal("claimed_balance", { precision: 20, scale: 6 }).notNull().default("0"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

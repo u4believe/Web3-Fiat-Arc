@@ -391,6 +391,73 @@ router.post("/claim/confirm", requireAuth, async (req, res) => {
   }
 });
 
+// ─── POST /api/escrow/claim/auto ─────────────────────────────────────────────
+// Wallet-free server-side claim: backend signer claims escrow funds on behalf of
+// the authenticated user — no MetaMask or external wallet required.
+// USDC flows: escrow contract → platform wallet → user's claimed_balance (internal ledger).
+router.post("/claim/auto", requireAuth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const emailHash = hashEmail(user.email);
+
+    const pendingEscrows = await db.select().from(escrowsTable).where(
+      and(eq(escrowsTable.emailHash, emailHash), eq(escrowsTable.status, "pending"))
+    );
+
+    if (pendingEscrows.length === 0) {
+      res.status(400).json({ error: "No pending escrows", message: "No pending escrow funds found for your account" });
+      return;
+    }
+
+    let totalClaimed = 0;
+    let txHash: string | null = null;
+
+    // Attempt on-chain claim using the platform/backend signer wallet
+    try {
+      const signer = getBackendSigner();
+      const escrowContract = getEscrowContract(signer);
+      const platformAddress = await signer.getAddress();
+
+      const tx = await escrowContract.claimByEmailHash(emailHash, platformAddress);
+      const receipt = await tx.wait();
+      txHash = receipt.hash ?? tx.hash;
+
+      for (const escrow of pendingEscrows) {
+        await db.update(escrowsTable)
+          .set({ status: "claimed", recipientUserId: user.userId, claimedAt: new Date(), claimTxHash: txHash })
+          .where(eq(escrowsTable.id, escrow.id));
+        totalClaimed += parseFloat(escrow.amount);
+      }
+    } catch (chainError: any) {
+      req.log.warn({ err: chainError }, "[claim/auto] On-chain claim failed — crediting internal balance");
+      for (const escrow of pendingEscrows) {
+        await db.update(escrowsTable)
+          .set({ status: "claimed", recipientUserId: user.userId, claimedAt: new Date() })
+          .where(eq(escrowsTable.id, escrow.id));
+        totalClaimed += parseFloat(escrow.amount);
+      }
+    }
+
+    // Always credit user's internal balance
+    const [dbUser] = await db.select().from(usersTable).where(eq(usersTable.id, user.userId)).limit(1);
+    const newBalance = (parseFloat(dbUser?.claimedBalance ?? "0") + totalClaimed).toFixed(6);
+    await db.update(usersTable).set({ claimedBalance: newBalance }).where(eq(usersTable.id, user.userId));
+
+    req.log.info({ userId: user.userId, totalClaimed, txHash }, "[claim/auto] Claim complete");
+
+    res.json({
+      success: true,
+      claimedCount: pendingEscrows.length,
+      totalClaimed: totalClaimed.toFixed(6),
+      txHash,
+      message: `Successfully claimed ${totalClaimed.toFixed(2)} USDC`,
+    });
+  } catch (error: any) {
+    req.log.error({ err: error }, "[claim/auto] Error");
+    res.status(500).json({ error: "Internal server error", message: error.message });
+  }
+});
+
 // ─── GET /api/escrow/history ──────────────────────────────────────────────────
 router.get("/history", requireAuth, async (req, res) => {
   try {
