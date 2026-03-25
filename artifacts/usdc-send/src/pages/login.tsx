@@ -1,48 +1,129 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Link, useLocation } from "wouter";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
 import { useQueryClient } from "@tanstack/react-query";
-import { Mail, Lock, ArrowRight, Loader2, Send } from "lucide-react";
+import { Mail, Lock, ArrowRight, Loader2, Send, ShieldCheck, RefreshCw } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { useLoginUser } from "@workspace/api-client-react";
 import { cn } from "@/lib/utils";
 import { AppLayout } from "@/components/layout";
 import { fadeUp, scaleIn, staggerContainer } from "@/lib/motion";
 
-const loginSchema = z.object({
-  email: z.string().email("Valid email required"),
-  password: z.string().min(1, "Password required"),
-});
+const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
-type LoginFormValues = z.infer<typeof loginSchema>;
+type Step = "credentials" | "otp";
 
 export default function Login() {
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
-  const loginMutation = useLoginUser();
-  const [error, setError] = useState("");
 
-  const { register, handleSubmit, formState: { errors } } = useForm<LoginFormValues>({
-    resolver: zodResolver(loginSchema),
-  });
+  const [step, setStep]           = useState<Step>("credentials");
+  const [userId, setUserId]       = useState<number | null>(null);
+  const [sentEmail, setSentEmail] = useState("");
+  const [isPending, setIsPending] = useState(false);
+  const [error, setError]         = useState("");
 
-  const onSubmit = async (data: LoginFormValues) => {
+  const [email,    setEmail]    = useState("");
+  const [password, setPassword] = useState("");
+
+  const [otp, setOtp] = useState(["", "", "", "", "", ""]);
+  const otpRefs       = useRef<(HTMLInputElement | null)[]>([]);
+
+  useEffect(() => {
+    if (step === "otp") otpRefs.current[0]?.focus();
+  }, [step]);
+
+  const handleCredentials = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email || !password) { setError("Email and password are required."); return; }
+    setError("");
+    setIsPending(true);
     try {
-      setError("");
-      const response = await loginMutation.mutateAsync({ data });
-      localStorage.setItem("token", response.token);
-      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
-      setLocation("/dashboard");
+      const res  = await fetch(`${BASE}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.toLowerCase().trim(), password }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.message ?? "Login failed");
+      setUserId(json.userId);
+      setSentEmail(email.toLowerCase().trim());
+      setStep("otp");
     } catch (err: any) {
-      setError(err.message || "Failed to login. Please check your credentials.");
+      setError(err.message ?? "Failed to log in. Please check your credentials.");
+    } finally {
+      setIsPending(false);
+    }
+  };
+
+  const handleOtpChange = (i: number, val: string) => {
+    if (!/^\d?$/.test(val)) return;
+    const next = [...otp];
+    next[i] = val;
+    setOtp(next);
+    if (val && i < 5) otpRefs.current[i + 1]?.focus();
+  };
+
+  const handleOtpKeyDown = (i: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Backspace" && !otp[i] && i > 0) otpRefs.current[i - 1]?.focus();
+    if (e.key === "ArrowLeft"  && i > 0) otpRefs.current[i - 1]?.focus();
+    if (e.key === "ArrowRight" && i < 5) otpRefs.current[i + 1]?.focus();
+  };
+
+  const handleOtpPaste = (e: React.ClipboardEvent) => {
+    const text = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, 6);
+    if (!text) return;
+    e.preventDefault();
+    const next = text.split("").concat(Array(6).fill("")).slice(0, 6);
+    setOtp(next);
+    otpRefs.current[Math.min(text.length, 5)]?.focus();
+  };
+
+  const handleVerifyOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const code = otp.join("");
+    if (code.length < 6) { setError("Please enter the full 6-digit code."); return; }
+    setError("");
+    setIsPending(true);
+    try {
+      const res  = await fetch(`${BASE}/api/auth/verify-otp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, code, type: "login" }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.message ?? "Verification failed");
+      localStorage.setItem("token", json.token);
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      setLocation("/");
+    } catch (err: any) {
+      setError(err.message ?? "Incorrect code. Please try again.");
+    } finally {
+      setIsPending(false);
+    }
+  };
+
+  const handleResend = async () => {
+    if (!userId) return;
+    setError("");
+    setIsPending(true);
+    try {
+      const res  = await fetch(`${BASE}/api/auth/resend-otp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, type: "login" }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.message ?? "Failed to resend");
+      setOtp(["", "", "", "", "", ""]);
+      otpRefs.current[0]?.focus();
+    } catch (err: any) {
+      setError(err.message ?? "Failed to resend code.");
+    } finally {
+      setIsPending(false);
     }
   };
 
   return (
     <AppLayout>
-      {/* Animated background orbs */}
       <div className="fixed inset-0 -z-10 overflow-hidden pointer-events-none">
         <div className="orb orb-blue w-[600px] h-[600px] top-[-200px] right-[-100px]" />
         <div className="orb orb-cyan w-[400px] h-[400px] bottom-[-100px] left-[-100px]" />
@@ -55,7 +136,6 @@ export default function Login() {
           animate="show"
           className="w-full max-w-md"
         >
-          {/* Logo mark */}
           <motion.div variants={fadeUp} className="flex justify-center mb-8">
             <motion.div
               animate={{ y: [0, -6, 0] }}
@@ -66,116 +146,170 @@ export default function Login() {
             </motion.div>
           </motion.div>
 
-          {/* Headline */}
-          <motion.div variants={fadeUp} className="text-center mb-8">
-            <h1 className="text-3xl font-display font-bold">Welcome back</h1>
-            <p className="text-muted-foreground mt-2">Log in to claim and manage your USDC.</p>
-          </motion.div>
-
-          {/* Card */}
-          <motion.div variants={scaleIn} className="glass-panel p-8 rounded-3xl">
-            {/* Error */}
-            <AnimatePresence>
-              {error && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0, y: -8 }}
-                  animate={{ opacity: 1, height: "auto", y: 0 }}
-                  exit={{ opacity: 0, height: 0 }}
-                  transition={{ duration: 0.3 }}
-                  className="mb-6 p-4 rounded-xl bg-destructive/10 text-destructive text-sm font-medium border border-destructive/20 overflow-hidden"
-                >
-                  {error}
+          <AnimatePresence mode="wait">
+            {step === "credentials" ? (
+              <motion.div key="credentials" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -16 }}>
+                <motion.div variants={fadeUp} className="text-center mb-8">
+                  <h1 className="text-3xl font-display font-bold">Welcome back</h1>
+                  <p className="text-muted-foreground mt-2">Log in to claim and manage your USDC.</p>
                 </motion.div>
-              )}
-            </AnimatePresence>
 
-            <motion.form
-              onSubmit={handleSubmit(onSubmit)}
-              variants={staggerContainer(0.08, 0.1)}
-              initial="hidden"
-              animate="show"
-              className="space-y-5"
-            >
-              {/* Email */}
-              <motion.div variants={fadeUp}>
-                <label className="block text-sm font-medium text-foreground mb-2">Email</label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-muted-foreground">
-                    <Mail className="w-5 h-5" />
-                  </div>
-                  <input
-                    {...register("email")}
-                    className={cn(
-                      "w-full pl-11 pr-4 py-3 rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all outline-none",
-                      errors.email && "border-destructive focus:border-destructive",
+                <motion.div variants={scaleIn} className="glass-panel p-8 rounded-3xl">
+                  <AnimatePresence>
+                    {error && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0, y: -8 }}
+                        animate={{ opacity: 1, height: "auto", y: 0 }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="mb-6 p-4 rounded-xl bg-destructive/10 text-destructive text-sm font-medium border border-destructive/20 overflow-hidden"
+                      >
+                        {error}
+                      </motion.div>
                     )}
-                    placeholder="you@example.com"
-                    autoComplete="email"
-                  />
-                </div>
-                <AnimatePresence>
-                  {errors.email && (
-                    <motion.p initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="mt-1.5 text-sm text-destructive">
-                      {errors.email.message}
-                    </motion.p>
-                  )}
-                </AnimatePresence>
-              </motion.div>
+                  </AnimatePresence>
 
-              {/* Password */}
-              <motion.div variants={fadeUp}>
-                <label className="block text-sm font-medium text-foreground mb-2">Password</label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-muted-foreground">
-                    <Lock className="w-5 h-5" />
+                  <form onSubmit={handleCredentials} className="space-y-5">
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-2">Email</label>
+                      <div className="relative">
+                        <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-muted-foreground">
+                          <Mail className="w-5 h-5" />
+                        </div>
+                        <input
+                          type="email"
+                          value={email}
+                          onChange={e => setEmail(e.target.value)}
+                          className="w-full pl-11 pr-4 py-3 rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all outline-none"
+                          placeholder="you@example.com"
+                          autoComplete="email"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-2">Password</label>
+                      <div className="relative">
+                        <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-muted-foreground">
+                          <Lock className="w-5 h-5" />
+                        </div>
+                        <input
+                          type="password"
+                          value={password}
+                          onChange={e => setPassword(e.target.value)}
+                          className="w-full pl-11 pr-4 py-3 rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all outline-none"
+                          placeholder="••••••••"
+                          autoComplete="current-password"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="pt-1">
+                      <motion.button
+                        type="submit"
+                        disabled={isPending}
+                        whileHover={!isPending ? { scale: 1.02, y: -1 } : {}}
+                        whileTap={!isPending ? { scale: 0.98 } : {}}
+                        className="w-full flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl font-bold text-white bg-primary hover:shadow-lg hover:shadow-primary/30 transition-shadow disabled:opacity-70 disabled:cursor-not-allowed"
+                      >
+                        {isPending ? <Loader2 className="w-5 h-5 animate-spin" /> : <>Log In <ArrowRight className="w-5 h-5" /></>}
+                      </motion.button>
+                    </div>
+                  </form>
+
+                  <div className="mt-6 text-center">
+                    <p className="text-sm text-muted-foreground">
+                      Don't have an account?{" "}
+                      <Link href="/register" className="font-semibold text-primary hover:underline">Sign up</Link>
+                    </p>
                   </div>
-                  <input
-                    type="password"
-                    {...register("password")}
-                    className={cn(
-                      "w-full pl-11 pr-4 py-3 rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all outline-none",
-                      errors.password && "border-destructive focus:border-destructive",
+                </motion.div>
+              </motion.div>
+            ) : (
+              <motion.div key="otp" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -16 }}>
+                <motion.div variants={fadeUp} className="text-center mb-8">
+                  <h1 className="text-3xl font-display font-bold">Check your email</h1>
+                  <p className="text-muted-foreground mt-2">
+                    We sent a 6-digit code to <span className="font-semibold text-foreground">{sentEmail}</span>
+                  </p>
+                </motion.div>
+
+                <motion.div variants={scaleIn} className="glass-panel p-8 rounded-3xl">
+                  <div className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-primary/5 border border-primary/10 mb-7">
+                    <ShieldCheck className="w-4 h-4 text-primary shrink-0" />
+                    <p className="text-sm text-muted-foreground">Enter the code to confirm it's you</p>
+                  </div>
+
+                  <AnimatePresence>
+                    {error && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0, y: -8 }}
+                        animate={{ opacity: 1, height: "auto", y: 0 }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="mb-6 p-4 rounded-xl bg-destructive/10 text-destructive text-sm font-medium border border-destructive/20 overflow-hidden"
+                      >
+                        {error}
+                      </motion.div>
                     )}
-                    placeholder="••••••••"
-                    autoComplete="current-password"
-                  />
-                </div>
-                <AnimatePresence>
-                  {errors.password && (
-                    <motion.p initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="mt-1.5 text-sm text-destructive">
-                      {errors.password.message}
-                    </motion.p>
-                  )}
-                </AnimatePresence>
-              </motion.div>
+                  </AnimatePresence>
 
-              {/* Submit */}
-              <motion.div variants={fadeUp} className="pt-1">
-                <motion.button
-                  type="submit"
-                  disabled={loginMutation.isPending}
-                  whileHover={!loginMutation.isPending ? { scale: 1.02, y: -1 } : {}}
-                  whileTap={!loginMutation.isPending ? { scale: 0.98 } : {}}
-                  className="w-full flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl font-bold text-white bg-primary hover:shadow-lg hover:shadow-primary/30 transition-shadow disabled:opacity-70 disabled:cursor-not-allowed"
-                >
-                  {loginMutation.isPending ? (
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                  ) : (
-                    <>Log In <ArrowRight className="w-5 h-5" /></>
-                  )}
-                </motion.button>
-              </motion.div>
-            </motion.form>
+                  <form onSubmit={handleVerifyOtp} className="space-y-6">
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-4 text-center">Verification Code</label>
+                      <div className="flex items-center justify-center gap-2" onPaste={handleOtpPaste}>
+                        {otp.map((digit, i) => (
+                          <input
+                            key={i}
+                            ref={el => { otpRefs.current[i] = el; }}
+                            type="text"
+                            inputMode="numeric"
+                            maxLength={1}
+                            value={digit}
+                            onChange={e => handleOtpChange(i, e.target.value)}
+                            onKeyDown={e => handleOtpKeyDown(i, e)}
+                            className={cn(
+                              "w-11 h-14 text-center text-xl font-bold rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all outline-none",
+                              digit && "border-primary/60",
+                            )}
+                          />
+                        ))}
+                      </div>
+                    </div>
 
-            <motion.div variants={fadeUp} initial="hidden" animate="show" transition={{ delay: 0.5 }} className="mt-6 text-center">
-              <p className="text-sm text-muted-foreground">
-                Don't have an account?{" "}
-                <Link href="/register" className="font-semibold text-primary hover:underline">
-                  Sign up
-                </Link>
-              </p>
-            </motion.div>
-          </motion.div>
+                    <motion.button
+                      type="submit"
+                      disabled={isPending || otp.join("").length < 6}
+                      whileHover={!isPending ? { scale: 1.02, y: -1 } : {}}
+                      whileTap={!isPending ? { scale: 0.98 } : {}}
+                      className="w-full flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl font-bold text-white bg-primary hover:shadow-lg hover:shadow-primary/30 transition-shadow disabled:opacity-70 disabled:cursor-not-allowed"
+                    >
+                      {isPending ? <Loader2 className="w-5 h-5 animate-spin" /> : <>Verify &amp; Sign In <ShieldCheck className="w-5 h-5" /></>}
+                    </motion.button>
+                  </form>
+
+                  <div className="mt-6 text-center space-y-2">
+                    <p className="text-sm text-muted-foreground">Didn't receive it?</p>
+                    <button
+                      type="button"
+                      onClick={handleResend}
+                      disabled={isPending}
+                      className="flex items-center gap-1.5 mx-auto text-sm font-medium text-primary hover:underline disabled:opacity-50"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" /> Resend code
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setStep("credentials"); setError(""); setOtp(["", "", "", "", "", ""]); }}
+                      className="block mx-auto text-sm text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      ← Back to login
+                    </button>
+                  </div>
+                </motion.div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </motion.div>
       </div>
     </AppLayout>

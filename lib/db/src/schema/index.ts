@@ -5,3 +5,4 @@ export * from "./escrow_balances";
 export * from "./chain_transactions";
 export * from "./indexer_state";
 export * from "./claim_nonces";
+export * from "./otp_codes";
