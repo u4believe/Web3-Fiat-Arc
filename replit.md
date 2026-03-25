@@ -38,10 +38,19 @@ artifacts-monorepo/
 
 1. **Send USDC via Email** — Connect MetaMask, enter recipient email + amount. Backend returns keccak256 email hash for on-chain escrow.
 2. **Smart Contract Escrow** — Funds locked in escrow contract (`0xae4c7eb1d8d01cbe25799c8f3cae84d03aada5cd`) using hashed emails.
-3. **Recipient Claim Flow** — Recipients register with email, backend verifies hash, releases escrow to their balance.
+3. **Recipient Claim Flow** — Recipients register with email, backend verifies hash, issues nonce-protected signature for on-chain claim.
 4. **Dual Withdrawal**:
    - Crypto: USDC transferred to wallet address via on-chain tx
-   - Fiat: Circle API wire transfer to bank account
+   - Fiat: Circle API wire transfer to bank account (Coming Soon in UI)
+5. **Security Hardening** (Phase 8):
+   - Replay attack protection: one-time nonces (15 min TTL) embedded in claim signatures
+   - All endpoints validated with Zod: EVM address regex, txHash regex, positive decimal amounts
+   - Email always normalized (`toLowerCase().trim()`) at both schema and DB level
+   - Helmet.js: HSTS (1 year, includeSubDomains, preload), X-Content-Type-Options, X-Frame-Options
+   - CORS origin allowlist (configurable via `ALLOWED_ORIGINS` env var)
+   - Body size cap (64 KB) to prevent body-bomb attacks
+   - `JWT_SECRET` validation — fails hard in production if using weak default
+   - Errors in production never leak stack traces
 
 ## Environment Variables
 
@@ -52,12 +61,18 @@ artifacts-monorepo/
 - `CIRCLE_API_BASE_URL` — Circle API base URL
 - `BACKEND_TRUSTED_SIGNER` — Trusted signer address
 - `USDC_ADDRESS` — USDC token contract address
+- `JWT_SECRET` — Strong random secret (min 32 chars); **required in production**
+- `ALLOWED_ORIGINS` — Comma-separated list of allowed CORS origins (optional; allows all in dev)
 
 ## Database Schema
 
 - `users` — Email, password hash, name, wallet address, claimed USDC balance
 - `escrows` — Sender address, recipient email + hash, amount, status, tx hashes
 - `withdrawals` — Withdrawal records (crypto/fiat) with status tracking
+- `escrow_balances` — On-chain balance aggregates from blockchain indexer
+- `claim_nonces` — One-time nonces for replay-attack protection (15-min expiry, consumed on use)
+- `chain_transactions` — Indexed blockchain events
+- `indexer_state` — Block cursor for the blockchain event indexer
 
 ## API Routes
 

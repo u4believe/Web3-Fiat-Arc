@@ -63,12 +63,20 @@ export const GetCurrentUserResponse = zod.object({
  * Initiates escrow deposit for a recipient email. Returns transaction data to sign on the frontend.
  * @summary Send USDC to an email address
  */
+export const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+export const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
+export const POSITIVE_DECIMAL = /^(?!0\d)\d+(\.\d+)?$/;
+
 export const SendUSDCBody = zod.object({
-  recipientEmail: zod.string().email(),
+  recipientEmail: zod.string().email().transform((v) => v.toLowerCase().trim()),
   amount: zod
     .string()
+    .regex(POSITIVE_DECIMAL, "Amount must be a positive number")
     .describe("Amount in USDC (as string to preserve precision)"),
-  senderAddress: zod.string().describe("Sender's wallet address"),
+  senderAddress: zod
+    .string()
+    .regex(EVM_ADDRESS, "senderAddress must be a valid EVM address (0x + 40 hex chars)")
+    .describe("Sender's wallet address"),
 });
 
 export const SendUSDCResponse = zod.object({
@@ -173,8 +181,14 @@ export const GetUserBalanceResponse = zod.object({
  * @summary Withdraw to crypto wallet
  */
 export const WithdrawCryptoBody = zod.object({
-  walletAddress: zod.string().describe("Destination wallet address"),
-  amount: zod.string().describe("Amount to withdraw in USDC"),
+  walletAddress: zod
+    .string()
+    .regex(EVM_ADDRESS, "walletAddress must be a valid EVM address (0x + 40 hex chars)")
+    .describe("Destination wallet address"),
+  amount: zod
+    .string()
+    .regex(POSITIVE_DECIMAL, "Amount must be a positive number")
+    .describe("Amount to withdraw in USDC"),
 });
 
 export const WithdrawCryptoResponse = zod.object({
@@ -205,4 +219,59 @@ export const WithdrawFiatResponse = zod.object({
   message: zod.string(),
   newBalance: zod.string(),
   estimatedArrival: zod.string().optional(),
+});
+
+// ─── Security-hardened schemas (not auto-generated) ───────────────────────────
+
+/**
+ * Confirm that a send transaction has been mined on-chain.
+ * @summary Confirm escrow deposit tx
+ */
+export const SendConfirmBody = zod.object({
+  escrowId: zod.number().int().positive("escrowId must be a positive integer"),
+  txHash: zod
+    .string()
+    .regex(TX_HASH, "txHash must be a valid 0x-prefixed 32-byte hex string"),
+});
+
+/**
+ * Request a backend-signed authorization to claim escrow funds.
+ * Returns a one-time nonce embedded in the signature.
+ * @summary Sign claim request
+ */
+export const ClaimSignBody = zod.object({
+  walletAddress: zod
+    .string()
+    .regex(EVM_ADDRESS, "walletAddress must be a valid EVM address (0x + 40 hex chars)"),
+});
+
+/**
+ * Confirm an on-chain claim transaction, consuming the nonce.
+ * @summary Confirm claim tx
+ */
+export const ClaimConfirmBody = zod.object({
+  txHash: zod
+    .string()
+    .regex(TX_HASH, "txHash must be a valid 0x-prefixed 32-byte hex string"),
+  nonce: zod.string().min(1, "nonce is required"),
+  walletAddress: zod
+    .string()
+    .regex(EVM_ADDRESS, "walletAddress must be a valid EVM address (0x + 40 hex chars)")
+    .optional(),
+});
+
+/**
+ * Fiat withdraw — extra validation on bank fields.
+ */
+export const WithdrawFiatBodySecure = WithdrawFiatBody.extend({
+  amount: zod
+    .string()
+    .regex(POSITIVE_DECIMAL, "Amount must be a positive number"),
+  bankAccountNumber: zod
+    .string()
+    .regex(/^\d{4,17}$/, "Bank account number must be 4–17 digits"),
+  routingNumber: zod
+    .string()
+    .regex(/^\d{9}$/, "US routing number must be exactly 9 digits"),
+  accountHolderName: zod.string().min(2, "Account holder name is required"),
 });

@@ -201,18 +201,18 @@ export default function Dashboard() {
         const err = await signRes.json().catch(() => ({}));
         throw new Error(err.message || "Failed to get backend signature");
       }
-      const { emailHash, signature, contractAddress, totalPendingAmount } = await signRes.json();
+      const { emailHash, signature, contractAddress, totalPendingAmount, nonce } = await signRes.json();
       setClaimTotal(totalPendingAmount);
 
       // Step 3 — user's wallet calls the contract
       setClaimStep("claiming");
       const txHash = await claimFromEscrow(contractAddress, emailHash, walletAddr, signature);
 
-      // Step 4 — notify backend (best effort, fire-and-forget)
+      // Step 4 — confirm with backend, consuming the one-time nonce
       fetch(`${BASE}/api/escrow/claim/confirm`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeader },
-        body: JSON.stringify({ txHash, walletAddress: walletAddr }),
+        body: JSON.stringify({ txHash, walletAddress: walletAddr, nonce }),
       }).catch(console.warn);
 
       setClaimTxHash(txHash);

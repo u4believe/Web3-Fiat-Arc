@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { requireAuth } from "../lib/auth.js";
 import { getBackendSigner, getUsdcContract, parseUsdcAmount, hashEmail } from "../lib/escrow.js";
 import { initiateWireTransfer } from "../lib/circle.js";
-import { WithdrawCryptoBody, WithdrawFiatBody } from "@workspace/api-zod";
+import { WithdrawCryptoBody, WithdrawFiatBodySecure } from "@workspace/api-zod";
 
 const router: IRouter = Router();
 
@@ -118,13 +118,13 @@ router.post("/crypto", requireAuth, async (req, res) => {
 router.post("/fiat", requireAuth, async (req, res) => {
   try {
     const user = (req as any).user;
-    const parsed = WithdrawFiatBody.safeParse(req.body);
+    const parsed = WithdrawFiatBodySecure.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: "Validation error", message: parsed.error.message });
       return;
     }
 
-    const { amount, bankAccountNumber, routingNumber, accountHolderName, country } = parsed.data;
+    const { amount, bankAccountNumber, routingNumber, accountHolderName, country } = parsed.data as any;
     const withdrawAmount = parseFloat(amount);
 
     if (withdrawAmount <= 0) {
