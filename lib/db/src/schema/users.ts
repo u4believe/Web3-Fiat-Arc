@@ -12,6 +12,23 @@ export const usersTable = pgTable("users", {
   circleWalletId: text("circle_wallet_id"),
   circleWalletAddress: text("circle_wallet_address"),
   claimedBalance: decimal("claimed_balance", { precision: 20, scale: 6 }).notNull().default("0"),
+
+  // ── Transaction password ───────────────────────────────────────────────────
+  // A secondary password required to authorize outgoing transactions.
+  // Stored as a bcrypt hash; never returned to the client.
+  transactionPasswordHash: text("transaction_password_hash"),
+
+  // ── Personal Authorization Key (PAK) ─────────────────────────────────────
+  // A one-time-reveal 40-char alphanumeric key used to authorize password
+  // changes. Stored only as a bcrypt hash (irreversible). The plaintext is
+  // returned exactly once at generation time and never persisted.
+  // Only the first 3 and last 4 characters are kept for user recognition.
+  pakHash:      text("pak_hash"),
+  pakPrefix:    text("pak_prefix"),    // first 3 chars — stored in plaintext
+  pakSuffix:    text("pak_suffix"),    // last 4 chars  — stored in plaintext
+  pakCreatedAt: timestamp("pak_created_at"),  // enforces the 6-month regeneration lock
+  pakCopiedAt:  timestamp("pak_copied_at"),   // set when user confirms they've saved the key
+
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

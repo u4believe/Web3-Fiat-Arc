@@ -66,9 +66,10 @@ router.post("/register", async (req, res) => {
     })();
 
     const code = await issueOtp(user.id, "register");
-    await sendOtpEmail(normalizedEmail, code, "register");
-
     res.status(201).json({ requiresOtp: true, userId: user.id });
+    sendOtpEmail(normalizedEmail, code, "register").catch((e) =>
+      req.log.error({ err: e }, "Failed to send register OTP email"),
+    );
   } catch (error: any) {
     req.log.error({ err: error }, "Registration error");
     res.status(500).json({ error: "Internal server error", message: error.message });
@@ -121,9 +122,10 @@ router.post("/login", async (req, res) => {
     }
 
     const code = await issueOtp(user.id, "login");
-    await sendOtpEmail(normalizedEmail, code, "login");
-
     res.json({ requiresOtp: true, userId: user.id });
+    sendOtpEmail(normalizedEmail, code, "login").catch((e) =>
+      req.log.error({ err: e }, "Failed to send login OTP email"),
+    );
   } catch (error: any) {
     req.log.error({ err: error }, "Login error");
     res.status(500).json({ error: "Internal server error", message: error.message });
@@ -211,9 +213,10 @@ router.post("/resend-otp", async (req, res) => {
     }
 
     const code = await issueOtp(userId, type);
-    await sendOtpEmail(user.email, code, type);
-
     res.json({ success: true, message: "A new verification code has been sent to your email." });
+    sendOtpEmail(user.email, code, type).catch((e) =>
+      req.log.error({ err: e }, "Failed to resend OTP email"),
+    );
   } catch (error: any) {
     req.log.error({ err: error }, "Resend OTP error");
     res.status(500).json({ error: "Internal server error", message: error.message });
@@ -243,6 +246,18 @@ router.get("/me", requireAuth, async (req, res) => {
       })();
     }
 
+    const SIX_MONTHS_MS = 6 * 30 * 24 * 60 * 60 * 1000;
+    const hasPak = !!dbUser.pakHash;
+    let pakCanRegenerate = !hasPak;
+    let nextPakAllowedAt: string | null = null;
+    if (hasPak && dbUser.pakCreatedAt) {
+      const elapsed = Date.now() - dbUser.pakCreatedAt.getTime();
+      pakCanRegenerate = elapsed >= SIX_MONTHS_MS;
+      if (!pakCanRegenerate) {
+        nextPakAllowedAt = new Date(dbUser.pakCreatedAt.getTime() + SIX_MONTHS_MS).toISOString();
+      }
+    }
+
     res.json({
       id: dbUser.id,
       email: dbUser.email,
@@ -250,6 +265,16 @@ router.get("/me", requireAuth, async (req, res) => {
       walletAddress: dbUser.walletAddress,
       circleWalletAddress: dbUser.circleWalletAddress,
       createdAt: dbUser.createdAt,
+      // Security status
+      hasTransactionPassword: !!dbUser.transactionPasswordHash,
+      hasPak,
+      pakCopied: !!dbUser.pakCopiedAt,
+      pakPreview: hasPak && dbUser.pakPrefix && dbUser.pakSuffix
+        ? `${dbUser.pakPrefix}${"*".repeat(33)}${dbUser.pakSuffix}`
+        : null,
+      pakCreatedAt: dbUser.pakCreatedAt?.toISOString() ?? null,
+      pakCanRegenerate,
+      nextPakAllowedAt,
     });
   } catch (error: any) {
     req.log.error({ err: error }, "Get current user error");

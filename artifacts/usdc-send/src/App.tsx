@@ -14,13 +14,18 @@ setAuthTokenGetter(() => localStorage.getItem("token"));
 
 const queryClient = new QueryClient();
 
+// Show sidebar app for logged-in users, marketing page for guests — both at "/"
+function HomeRoute() {
+  const isLoggedIn = !!localStorage.getItem("token");
+  return isLoggedIn ? <Dashboard /> : <Landing />;
+}
+
 function Router() {
   return (
     <Switch>
-      <Route path="/" component={Landing} />
+      <Route path="/" component={HomeRoute} />
       <Route path="/login" component={Login} />
       <Route path="/register" component={Register} />
-      <Route path="/dashboard" component={Dashboard} />
       <Route component={NotFound} />
     </Switch>
   );

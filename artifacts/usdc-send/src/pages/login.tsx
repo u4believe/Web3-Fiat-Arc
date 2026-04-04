@@ -252,15 +252,6 @@ export default function Login() {
                 </div>
 
                 {/* Dev-mode hint when SMTP isn't configured */}
-                {IS_DEV && (
-                  <div className="flex items-start gap-2 px-4 py-3 rounded-xl bg-amber-50 border border-amber-200 mb-5 text-sm text-amber-800">
-                    <Info className="w-4 h-4 mt-0.5 shrink-0" />
-                    <span>
-                      <strong>Dev mode:</strong> SMTP not configured — check the{" "}
-                      <strong>API server console logs</strong> for your OTP code.
-                    </span>
-                  </div>
-                )}
 
                 <AnimatePresence>
                   {error && (

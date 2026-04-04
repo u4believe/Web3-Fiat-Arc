@@ -275,3 +275,17 @@ export const WithdrawFiatBodySecure = WithdrawFiatBody.extend({
     .regex(/^\d{9}$/, "US routing number must be exactly 9 digits"),
   accountHolderName: zod.string().min(2, "Account holder name is required"),
 });
+
+/**
+ * Configure a recurring transfer
+ */
+export const CreateRecurringBody = zod.object({
+  recipientEmail: zod.string().email().transform((v) => v.toLowerCase().trim()),
+  amount: zod.string().regex(POSITIVE_DECIMAL, "Amount must be a positive number"),
+  interval: zod.enum(["daily", "weekly", "monthly"]),
+  endDate: zod.string().optional().describe("ISO date string for when the recurring transfer should end"),
+});
+
+export const CancelRecurringBody = zod.object({
+  recurringId: zod.number().int().positive("recurringId must be a positive integer"),
+});

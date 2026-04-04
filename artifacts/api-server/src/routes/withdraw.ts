@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import { db, usersTable, withdrawalsTable, escrowBalancesTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
+import bcrypt from "bcrypt";
 import { requireAuth } from "../lib/auth.js";
 import { getBackendSigner, getUsdcContract, parseUsdcAmount, hashEmail } from "../lib/escrow.js";
 import { initiateWireTransfer } from "../lib/circle.js";
@@ -47,7 +48,21 @@ router.post("/crypto", requireAuth, async (req, res) => {
       return;
     }
 
-    const { claimedBalance } = await loadUserBalance(user.userId, user.email);
+    const { dbUser, claimedBalance } = await loadUserBalance(user.userId, user.email);
+
+    // Enforce transaction password if the user has one set
+    if (dbUser?.transactionPasswordHash) {
+      const txnPwd = typeof req.body.transactionPassword === "string" ? req.body.transactionPassword : "";
+      if (!txnPwd) {
+        res.status(403).json({ error: "Transaction password required", message: "Please enter your transaction password to authorize this withdrawal" });
+        return;
+      }
+      const txnPwdValid = await bcrypt.compare(txnPwd, dbUser.transactionPasswordHash);
+      if (!txnPwdValid) {
+        res.status(403).json({ error: "Invalid transaction password", message: "The transaction password you entered is incorrect" });
+        return;
+      }
+    }
 
     if (withdrawAmount > claimedBalance) {
       res.status(400).json({

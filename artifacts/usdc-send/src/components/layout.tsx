@@ -37,18 +37,18 @@ export function Navbar() {
           <div className="flex items-center gap-4">
             {isSuccess && user ? (
               <>
-                <Link href="/dashboard" className="hidden md:flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors">
+                <Link href="/" className="hidden md:flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors">
                   <LayoutDashboard className="w-4 h-4" />
                   Dashboard
                 </Link>
                 <div className="h-8 w-px bg-border hidden md:block"></div>
                 <div className="flex items-center gap-3">
                   <div className="hidden sm:flex flex-col items-end">
-                    <span className="text-sm font-medium text-foreground">{user.name}</span>
+                    <span className="text-sm font-medium text-foreground">{user.name || "User"}</span>
                     <span className="text-xs text-muted-foreground">{user.email}</span>
                   </div>
                   <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold border border-primary/20">
-                    {user.name.charAt(0).toUpperCase()}
+                    {(user.name || user.email || "?").charAt(0).toUpperCase()}
                   </div>
                   <button 
                     onClick={handleLogout}

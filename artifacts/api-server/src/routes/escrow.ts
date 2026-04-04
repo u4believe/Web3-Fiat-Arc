@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import { db, escrowsTable, usersTable, escrowBalancesTable, claimNoncesTable } from "@workspace/db";
 import { eq, and, lt } from "drizzle-orm";
+import bcrypt from "bcrypt";
 import { requireAuth } from "../lib/auth.js";
 import {
   hashEmail,
@@ -494,7 +495,7 @@ router.post("/send/platform", requireAuth, async (req, res) => {
   try {
     const user = (req as any).user;
 
-    const body = req.body as { recipientEmail?: unknown; amount?: unknown };
+    const body = req.body as { recipientEmail?: unknown; amount?: unknown; transactionPassword?: unknown };
     const recipientEmail = typeof body.recipientEmail === "string" ? body.recipientEmail.toLowerCase().trim() : "";
     const amountRaw = typeof body.amount === "string" ? body.amount.trim() : "";
 
@@ -520,6 +521,20 @@ router.post("/send/platform", requireAuth, async (req, res) => {
 
     const [sender] = await db.select().from(usersTable).where(eq(usersTable.id, user.userId)).limit(1);
     const currentBalance = parseFloat(sender?.claimedBalance ?? "0");
+
+    // Enforce transaction password if the user has one set
+    if (sender?.transactionPasswordHash) {
+      const txnPwd = typeof body.transactionPassword === "string" ? body.transactionPassword : "";
+      if (!txnPwd) {
+        res.status(403).json({ error: "Transaction password required", message: "Please enter your transaction password to authorize this transfer" });
+        return;
+      }
+      const txnPwdValid = await bcrypt.compare(txnPwd, sender.transactionPasswordHash);
+      if (!txnPwdValid) {
+        res.status(403).json({ error: "Invalid transaction password", message: "The transaction password you entered is incorrect" });
+        return;
+      }
+    }
 
     if (currentBalance < numAmount) {
       res.status(400).json({

@@ -64,7 +64,17 @@ app.use(
 );
 
 // ─── Body parsing ─────────────────────────────────────────────────────────────
-app.use(express.json({ limit: "64kb" })); // hard cap to prevent body-bomb attacks
+// The `verify` callback captures the raw body buffer on every request.
+// Webhook signature validators (Paystack, Monnify) read req.rawBody to verify
+// HMAC integrity before the parsed JSON is used.
+app.use(
+  express.json({
+    limit: "64kb",
+    verify: (req, _res, buf) => {
+      (req as any).rawBody = buf;
+    },
+  }),
+);
 app.use(express.urlencoded({ extended: true, limit: "64kb" }));
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
