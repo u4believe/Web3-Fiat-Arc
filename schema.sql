@@ -133,3 +133,27 @@ CREATE TABLE IF NOT EXISTS "recurring_transfers" (
   "status" text NOT NULL DEFAULT 'active',
   "created_at" timestamp NOT NULL DEFAULT now()
 );
+
+-- ─── Column migrations (safe to re-run) ──────────────────────────────────────
+-- If your database was created before these features were added, run these
+-- ALTER TABLE statements to add the missing columns.
+
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "email_hash" text UNIQUE;
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "circle_wallet_id" text;
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "circle_wallet_address" text;
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "transaction_password_hash" text;
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "pak_hash" text;
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "pak_prefix" text;
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "pak_suffix" text;
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "pak_created_at" timestamp;
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "pak_copied_at" timestamp;
+
+-- Fix old escrows that were incorrectly created with status 'confirmed'
+-- (they should be 'pending' so receivers can see them)
+UPDATE "escrows" SET "status" = 'pending' WHERE "status" = 'confirmed';
+
+-- Ensure indexer_state rows exist for all 4 networks
+INSERT INTO "indexer_state" ("id", "last_processed_block") VALUES (1, 0) ON CONFLICT ("id") DO NOTHING;
+INSERT INTO "indexer_state" ("id", "last_processed_block") VALUES (2, 0) ON CONFLICT ("id") DO NOTHING;
+INSERT INTO "indexer_state" ("id", "last_processed_block") VALUES (3, 0) ON CONFLICT ("id") DO NOTHING;
+INSERT INTO "indexer_state" ("id", "last_processed_block") VALUES (4, 0) ON CONFLICT ("id") DO NOTHING;

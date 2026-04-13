@@ -27,7 +27,7 @@ import { Router, type IRouter } from "express";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
 import { db, usersTable, otpCodesTable } from "@workspace/db";
-import { eq, and, gt } from "drizzle-orm";
+import { eq, and, gt, sql } from "drizzle-orm";
 import { requireAuth } from "../lib/auth.js";
 import { sendSecurityOtpEmail } from "../lib/email.js";
 import { logger } from "../lib/logger.js";
@@ -418,6 +418,95 @@ router.post("/change-txn-password/confirm", requireAuth, async (req, res) => {
     res.json({ success: true, message: "Transaction password updated successfully." });
   } catch (err: any) {
     logger.error({ err }, "[security/change-txn-password/confirm]");
+    res.status(500).json({ error: "Internal server error", message: err.message });
+  }
+});
+
+// ── POST /api/security/delete-account/request-otp ────────────────────────────
+// Step 1: verify PAK, then send OTP to email.
+
+router.post("/delete-account/request-otp", requireAuth, async (req, res) => {
+  try {
+    const { userId, email } = (req as any).user;
+    const { pak } = req.body as { pak?: unknown };
+
+    if (typeof pak !== "string" || !pak.trim()) {
+      res.status(400).json({ error: "Validation error", message: "pak is required" });
+      return;
+    }
+
+    const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+    if (!user) { res.status(404).json({ error: "Not found", message: "User not found" }); return; }
+
+    if (!user.pakHash) {
+      res.status(400).json({ error: "No PAK", message: "You must generate a PAK before deleting your account" });
+      return;
+    }
+
+    const pakValid = await bcrypt.compare(pak.trim(), user.pakHash);
+    if (!pakValid) {
+      res.status(401).json({ error: "Invalid PAK", message: "The authorization key you entered is incorrect" });
+      return;
+    }
+
+    const code = await issueOtp(userId, "del-account");
+    await sendSecurityOtpEmail(email, code, "del-account");
+    res.json({ sent: true, message: "Verification code sent to your email." });
+  } catch (err: any) {
+    logger.error({ err }, "[security/delete-account/request-otp]");
+    res.status(500).json({ error: "Internal server error", message: err.message });
+  }
+});
+
+// ── POST /api/security/delete-account/confirm ─────────────────────────────────
+// Step 2: verify PAK again + OTP, then permanently delete the account and all data.
+
+router.post("/delete-account/confirm", requireAuth, async (req, res) => {
+  try {
+    const { userId } = (req as any).user;
+    const { pak, otp } = req.body as { pak?: unknown; otp?: unknown };
+
+    if (typeof pak !== "string" || typeof otp !== "string") {
+      res.status(400).json({ error: "Validation error", message: "pak and otp are required" });
+      return;
+    }
+
+    const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+    if (!user) { res.status(404).json({ error: "Not found", message: "User not found" }); return; }
+
+    if (!user.pakHash) {
+      res.status(400).json({ error: "No PAK", message: "You must generate a PAK before deleting your account" });
+      return;
+    }
+
+    const pakValid = await bcrypt.compare(pak.trim(), user.pakHash);
+    if (!pakValid) {
+      res.status(401).json({ error: "Invalid PAK", message: "The authorization key you entered is incorrect" });
+      return;
+    }
+
+    const otpValid = await verifyOtp(userId, otp, "del-account");
+    if (!otpValid) {
+      res.status(401).json({ error: "Invalid code", message: "OTP is invalid or has expired" });
+      return;
+    }
+
+    // Hard-delete all user data in dependency order.
+    // escrows: sender is identified by wallet address, not userId — we only null
+    // the recipient link so the sender's on-chain record is preserved for auditing.
+    await db.execute(sql`DELETE FROM otp_codes           WHERE user_id        = ${userId}`);
+    await db.execute(sql`DELETE FROM withdrawals          WHERE user_id        = ${userId}`);
+    await db.execute(sql`DELETE FROM deposits             WHERE user_id        = ${userId}`);
+    await db.execute(sql`DELETE FROM virtual_accounts     WHERE user_id        = ${userId}`);
+    await db.execute(sql`DELETE FROM claim_nonces         WHERE user_id        = ${userId}`);
+    await db.execute(sql`DELETE FROM recurring_transfers  WHERE sender_user_id = ${userId}`);
+    await db.execute(sql`UPDATE escrows SET recipient_user_id = NULL WHERE recipient_user_id = ${userId}`);
+    await db.execute(sql`DELETE FROM users                WHERE id             = ${userId}`);
+
+    logger.info({ userId }, "[security/delete-account] Account permanently deleted");
+    res.json({ success: true, message: "Your account has been permanently deleted." });
+  } catch (err: any) {
+    logger.error({ err }, "[security/delete-account/confirm]");
     res.status(500).json({ error: "Internal server error", message: err.message });
   }
 });

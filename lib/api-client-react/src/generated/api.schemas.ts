@@ -31,7 +31,16 @@ export interface UserInfo {
   email: string;
   name: string;
   walletAddress?: string | null;
+  circleWalletAddress?: string | null;
   createdAt: string;
+  // Security fields
+  hasTransactionPassword: boolean;
+  hasPak: boolean;
+  pakCopied: boolean;
+  pakPreview?: string | null;
+  pakCreatedAt?: string | null;
+  pakCanRegenerate: boolean;
+  nextPakAllowedAt?: string | null;
 }
 
 export interface AuthResponse {

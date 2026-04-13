@@ -47,4 +47,17 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Environment files — contain secrets, never commit these
 .env
+.env.*
+!.env.example
+!.env.sample
+
+# One-time setup scripts — contain logic that reads secrets
+artifacts/api-server/gen-ciphertext.mjs
+artifacts/api-server/setup-circle.mjs
+artifacts/api-server/get-master-wallet.mjs
+
+# Source maps (large, not needed in git)
+*.map

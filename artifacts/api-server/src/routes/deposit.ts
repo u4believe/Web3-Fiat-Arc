@@ -8,7 +8,6 @@ import {
   verifyPaystackSignature,
   parsePaystackCharge,
 } from "../lib/paystack.js";
-import crypto from "crypto";
 
 const router: IRouter = Router();
 
@@ -164,52 +163,73 @@ router.post("/paystack/webhook", async (req, res) => {
 // ─── POST /api/deposit/circle/webhook ────────────────────────────────────────
 // Circle fires this when USDC lands in any user's Developer-Controlled Wallet.
 // Supports all Circle-connected networks (Polygon Amoy, Ethereum, Base, etc.)
+// Webhook payload reference:
+//   notificationType: "transactions.inbound"
+//   notification.state: "COMPLETED"
+//   notification.walletId: Circle wallet ID
+//   notification.amounts: ["10"]  (string array)
+//   notification.id: transaction ID (used for idempotency)
 router.post("/circle/webhook", async (req, res) => {
-  // Always respond 200 immediately so Circle doesn't retry
+  // Always respond 200 immediately — Circle retries if it doesn't get 200 within 5s
   res.status(200).json({ received: true });
 
   try {
     const { notificationType, notification } = req.body ?? {};
 
-    // Only process confirmed inbound transfers
+    // Log every webhook arrival for debugging (before any filtering)
+    console.info(`[circle/webhook] Received notificationType=${notificationType} body=${JSON.stringify(req.body).slice(0, 300)}`);
+
     if (notificationType !== "transactions.inbound") return;
     if (!notification) return;
 
-    const { walletId, amounts, tokenId, blockchain, txHash, state } = notification;
+    const { id: txId, walletId, amounts, blockchain, txHash, state, destinationAddress } = notification;
 
-    if (state !== "CONFIRMED") return;
-    if (!walletId || !amounts?.length) return;
+    console.info(`[circle/webhook] Inbound: state=${state} walletId=${walletId} address=${destinationAddress} amount=${amounts?.[0]} chain=${blockchain}`);
 
-    // Verify it's a USDC transfer (token symbol check)
-    const isUsdc =
-      notification.token?.symbol?.toUpperCase().includes("USDC") ||
-      notification.amounts?.[0] !== undefined; // fallback: accept any token if symbol unavailable
+    // Circle sends "COMPLETED" for fully settled inbound transfers
+    if (state !== "COMPLETED") return;
+    if (!amounts?.length) return;
 
-    if (!isUsdc) return;
-
-    const amount = String(amounts[0] ?? notification.amount ?? "0");
+    const amount = String(amounts[0] ?? "0");
     if (!amount || parseFloat(amount) <= 0) return;
 
-    // Find the user whose Circle wallet received the funds
-    const [dbUser] = await db
-      .select({ id: usersTable.id, claimedBalance: usersTable.claimedBalance })
-      .from(usersTable)
-      .where(eq(usersTable.circleWalletId, walletId))
-      .limit(1);
+    // Find the user — try by circleWalletId first, then fall back to wallet address
+    let dbUser: { id: number; claimedBalance: string } | undefined;
+
+    if (walletId) {
+      const [byWalletId] = await db
+        .select({ id: usersTable.id, claimedBalance: usersTable.claimedBalance })
+        .from(usersTable)
+        .where(eq(usersTable.circleWalletId, walletId))
+        .limit(1);
+      dbUser = byWalletId;
+    }
+
+    if (!dbUser && destinationAddress) {
+      const { sql } = await import("drizzle-orm");
+      const [byAddress] = await db
+        .select({ id: usersTable.id, claimedBalance: usersTable.claimedBalance })
+        .from(usersTable)
+        .where(sql`lower(${usersTable.circleWalletAddress}) = lower(${destinationAddress})`)
+        .limit(1);
+      dbUser = byAddress;
+    }
 
     if (!dbUser) {
-      console.warn(`[circle/webhook] No user found for walletId=${walletId}`);
+      console.warn(`[circle/webhook] No user found for walletId=${walletId} address=${destinationAddress}`);
       return;
     }
 
-    // Idempotency — skip if this tx was already credited
-    const existing = await db
-      .select({ id: depositsTable.id })
-      .from(depositsTable)
-      .where(eq(depositsTable.txHash, txHash ?? ""))
-      .limit(1);
-
-    if (existing.length > 0) return;
+    // Idempotency — use Circle's transaction ID (txId) to avoid double-crediting
+    const idempotencyRef = txId ?? txHash ?? "";
+    if (idempotencyRef) {
+      const existing = await db
+        .select({ id: depositsTable.id })
+        .from(depositsTable)
+        .where(eq(depositsTable.depositReference, idempotencyRef))
+        .limit(1);
+      if (existing.length > 0) return;
+    }
 
     const newBalance = (parseFloat(dbUser.claimedBalance ?? "0") + parseFloat(amount)).toFixed(6);
 
@@ -223,11 +243,12 @@ router.post("/circle/webhook", async (req, res) => {
       type: "crypto",
       source: `${blockchain ?? "Circle"} USDC`,
       status: "completed",
+      depositReference: idempotencyRef || null,
       txHash: txHash ?? null,
       creditedAt: new Date(),
     });
 
-    console.info(`[circle/webhook] Credited ${amount} USDC to user ${dbUser.id} from ${blockchain} (tx: ${txHash})`);
+    console.info(`[circle/webhook] Credited ${amount} USDC to user ${dbUser.id} from ${blockchain} (circleId: ${txId})`);
   } catch (err: any) {
     console.error("[circle/webhook] Error:", err?.message);
   }

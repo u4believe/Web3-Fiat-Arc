@@ -56,9 +56,9 @@ router.post("/register", async (req, res) => {
 
     (async () => {
       try {
-        const { walletId, address } = await createUserCircleWallet(user.id);
+        const { walletId, address, walletIdsJson } = await createUserCircleWallet(user.id);
         await db.update(usersTable)
-          .set({ circleWalletId: walletId, circleWalletAddress: address })
+          .set({ circleWalletId: walletId, circleWalletAddress: address, circleWalletIdsJson: walletIdsJson } as any)
           .where(eq(usersTable.id, user.id));
       } catch (e: any) {
         console.warn(`[Circle] Wallet provisioning failed for user ${user.id}:`, e?.message || e);

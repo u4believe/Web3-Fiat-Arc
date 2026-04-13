@@ -14,12 +14,11 @@ import {
   AlertCircle,
   LogIn,
   UserPlus,
-  Copy,
-  Check,
+  Lock,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AppLayout } from "@/components/layout";
-import { fadeUp, slideLeft, slideRight, scaleIn, staggerContainer, fadeIn } from "@/lib/motion";
+import { fadeUp, slideRight, scaleIn, staggerContainer, fadeIn } from "@/lib/motion";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -34,23 +33,185 @@ const sendSchema = z.object({
 
 type SendFormValues = z.infer<typeof sendSchema>;
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const handleCopy = async () => {
-    await navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
+// ── Major financial city coordinates (as % of SVG viewBox 0 0 1000 500) ──────
+const CITIES = [
+  { name: "New York",    x: 230, y: 175 },
+  { name: "London",      x: 460, y: 145 },
+  { name: "Lagos",       x: 472, y: 265 },
+  { name: "Dubai",       x: 592, y: 210 },
+  { name: "Singapore",   x: 720, y: 280 },
+  { name: "Tokyo",       x: 790, y: 175 },
+  { name: "São Paulo",   x: 278, y: 330 },
+  { name: "Nairobi",     x: 548, y: 288 },
+  { name: "Mumbai",      x: 638, y: 232 },
+  { name: "Sydney",      x: 810, y: 370 },
+  { name: "Toronto",     x: 215, y: 155 },
+  { name: "Frankfurt",   x: 490, y: 143 },
+];
+
+// Arcs to draw (index pairs from CITIES array)
+const ARCS: [number, number][] = [
+  [0, 1],  // NY → London
+  [1, 3],  // London → Dubai
+  [3, 4],  // Dubai → Singapore
+  [4, 5],  // Singapore → Tokyo
+  [0, 6],  // NY → São Paulo
+  [1, 2],  // London → Lagos
+  [2, 7],  // Lagos → Nairobi
+  [7, 3],  // Nairobi → Dubai
+  [8, 4],  // Mumbai → Singapore
+  [1, 11], // London → Frankfurt
+  [10, 0], // Toronto → NY
+  [4, 9],  // Singapore → Sydney
+];
+
+function cubicBezierArc(x1: number, y1: number, x2: number, y2: number) {
+  const mx = (x1 + x2) / 2;
+  const my = (y1 + y2) / 2;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  // Arc height proportional to distance
+  const lift = Math.min(len * 0.38, 120);
+  const cpx = mx - (dy / len) * lift;
+  const cpy = my - (dx / len) * lift * 0.4 - lift * 0.5;
+  return `M ${x1} ${y1} Q ${cpx} ${cpy} ${x2} ${y2}`;
+}
+
+function WorldMapBackground() {
   return (
-    <button onClick={handleCopy} className="p-1 rounded hover:bg-white/20 transition-colors" title="Copy">
-      {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5 opacity-60 hover:opacity-100" />}
-    </button>
+    <div className="absolute inset-0 -z-10 overflow-hidden">
+      {/* Base gradient */}
+      <div className="absolute inset-0 bg-gradient-to-br from-slate-50 via-blue-50/60 to-indigo-50/80" />
+
+      {/* Real world map image — place a world map PNG at public/images/world-map.png */}
+      <img
+        src="/images/world-map.png"
+        alt=""
+        aria-hidden="true"
+        className="absolute inset-0 w-full h-full object-cover opacity-[0.18] select-none pointer-events-none"
+        style={{ filter: "saturate(0.4) contrast(0.9)" }}
+      />
+
+      {/* Radial glow center */}
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_60%_at_50%_40%,rgba(99,102,241,0.07)_0%,transparent_70%)]" />
+
+      {/* SVG overlay — arcs + city dots sit on top of the map image */}
+      <svg
+        viewBox="0 0 1000 500"
+        className="absolute inset-0 w-full h-full"
+        preserveAspectRatio="xMidYMid slice"
+        aria-hidden="true"
+      >
+        <defs>
+          {/* Arc gradient */}
+          <linearGradient id="arcGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="#6366f1" stopOpacity="0" />
+            <stop offset="50%" stopColor="#6366f1" stopOpacity="0.7" />
+            <stop offset="100%" stopColor="#06b6d4" stopOpacity="0" />
+          </linearGradient>
+
+          {/* Glow filter for dots */}
+          <filter id="dotGlow" x="-100%" y="-100%" width="300%" height="300%">
+            <feGaussianBlur stdDeviation="3" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+
+          {/* Clip path */}
+          <clipPath id="mapClip">
+            <rect x="0" y="0" width="1000" height="500" />
+          </clipPath>
+        </defs>
+
+        {/* ── Dot-grid overlay ───────────────────────────────────────────── */}
+        <pattern id="dots" x="0" y="0" width="20" height="20" patternUnits="userSpaceOnUse">
+          <circle cx="10" cy="10" r="0.8" fill="#94a3b8" />
+        </pattern>
+        <rect width="1000" height="500" fill="url(#dots)" opacity="0.2" />
+
+        {/* ── Connection arcs ────────────────────────────────────────────── */}
+        <g clipPath="url(#mapClip)">
+          {ARCS.map(([i, j], idx) => {
+            const a = CITIES[i];
+            const b = CITIES[j];
+            const d = cubicBezierArc(a.x, a.y, b.x, b.y);
+            const duration = 2.8 + (idx % 4) * 0.5;
+            const delay = idx * 0.45;
+            return (
+              <g key={idx}>
+                {/* Static faint arc */}
+                <path d={d} fill="none" stroke="#6366f1" strokeWidth="0.8" opacity="0.18" />
+                {/* Animated travelling dash */}
+                <motion.path
+                  d={d}
+                  fill="none"
+                  stroke="url(#arcGrad)"
+                  strokeWidth="1.6"
+                  strokeDasharray="12 200"
+                  initial={{ strokeDashoffset: 220 }}
+                  animate={{ strokeDashoffset: -220 }}
+                  transition={{
+                    duration,
+                    delay,
+                    repeat: Infinity,
+                    ease: "linear",
+                    repeatDelay: 0.8,
+                  }}
+                />
+              </g>
+            );
+          })}
+        </g>
+
+        {/* ── City dots ─────────────────────────────────────────────────── */}
+        {CITIES.map((city, idx) => (
+          <g key={city.name} filter="url(#dotGlow)">
+            {/* Outer pulse ring */}
+            <motion.circle
+              cx={city.x}
+              cy={city.y}
+              r={6}
+              fill="none"
+              stroke="#6366f1"
+              strokeWidth="1"
+              initial={{ opacity: 0.6, scale: 1 }}
+              animate={{ opacity: 0, scale: 2.8 }}
+              transition={{
+                duration: 2.2,
+                delay: idx * 0.18,
+                repeat: Infinity,
+                ease: "easeOut",
+              }}
+              style={{ transformOrigin: `${city.x}px ${city.y}px` }}
+            />
+            {/* Inner solid dot */}
+            <circle cx={city.x} cy={city.y} r={3} fill="#6366f1" opacity="0.85" />
+            <circle cx={city.x} cy={city.y} r={1.5} fill="white" opacity="0.9" />
+          </g>
+        ))}
+      </svg>
+
+      {/* Top vignette so header blends */}
+      <div className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-slate-50 to-transparent" />
+      {/* Bottom fade into background */}
+      <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-slate-50/90 to-transparent" />
+
+      {/* Subtle blue ambient orbs */}
+      <div className="absolute top-[-80px] left-[8%]  w-[420px] h-[420px] rounded-full bg-indigo-400/10 blur-[90px] pointer-events-none" />
+      <div className="absolute top-[15%] right-[4%]  w-[340px] h-[340px] rounded-full bg-cyan-400/10   blur-[80px] pointer-events-none" />
+      <div className="absolute bottom-[8%] left-[32%] w-[300px] h-[300px] rounded-full bg-violet-400/8  blur-[70px] pointer-events-none" />
+    </div>
   );
 }
 
 export default function Landing() {
   const [, navigate] = useLocation();
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [hasTransactionPassword, setHasTransactionPassword] = useState(false);
+  const [txnPwd,       setTxnPwd]       = useState("");
   const [isSending,    setIsSending]    = useState(false);
   const [formError,    setFormError]    = useState<string | null>(null);
   const [successEmail, setSuccessEmail] = useState("");
@@ -58,7 +219,16 @@ export default function Landing() {
   const [didSucceed,   setDidSucceed]   = useState(false);
 
   useEffect(() => {
-    setIsLoggedIn(!!localStorage.getItem("token"));
+    const token = localStorage.getItem("token");
+    setIsLoggedIn(!!token);
+    if (token) {
+      fetch(`${BASE}/api/auth/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then((r) => r.json())
+        .then((u) => { if (u?.hasTransactionPassword) setHasTransactionPassword(true); })
+        .catch(() => {});
+    }
   }, []);
 
   const { register, handleSubmit, reset, formState: { errors } } = useForm<SendFormValues>({
@@ -76,18 +246,21 @@ export default function Landing() {
       const jwt = localStorage.getItem("token");
       const sendHeaders: Record<string, string> = { "Content-Type": "application/json" };
       if (jwt) sendHeaders["Authorization"] = `Bearer ${jwt}`;
+      const payload: Record<string, string> = {
+        recipientEmail: data.recipientEmail.toLowerCase().trim(),
+        amount: data.amount,
+      };
+      if (hasTransactionPassword && txnPwd) payload["transactionPassword"] = txnPwd;
       const res = await fetch(`${BASE}/api/escrow/send/platform`, {
         method: "POST",
         headers: sendHeaders,
-        body: JSON.stringify({
-          recipientEmail: data.recipientEmail.toLowerCase().trim(),
-          amount: data.amount,
-        }),
+        body: JSON.stringify(payload),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.message ?? "Failed to send payment");
       setSuccessEmail(data.recipientEmail.toLowerCase().trim());
       setSuccessAmount(data.amount);
+      setTxnPwd("");
       setDidSucceed(true);
     } catch (err: any) {
       setFormError(err?.message ?? "Failed to send. Please try again.");
@@ -110,29 +283,7 @@ export default function Landing() {
     <AppLayout>
       <div className="relative overflow-hidden min-h-[calc(100vh-5rem)] flex items-center">
 
-        {/* ── Animated background ──────────────────────────────────────────── */}
-        <div className="absolute inset-0 -z-10">
-          <img
-            src={`${import.meta.env.BASE_URL}images/hero-bg.png`}
-            alt=""
-            className="w-full h-full object-cover opacity-30"
-          />
-          <div className="absolute inset-0 bg-gradient-to-b from-transparent via-background/70 to-background" />
-
-          {/* Floating gradient orbs */}
-          <div className="orb orb-blue w-[500px] h-[500px] top-[-100px] left-[10%]" />
-          <div className="orb orb-cyan w-[400px] h-[400px] top-[20%] right-[5%]" />
-          <div className="orb orb-violet w-[350px] h-[350px] bottom-[10%] left-[30%]" />
-
-          {/* Subtle grid overlay */}
-          <div
-            className="absolute inset-0 opacity-[0.03]"
-            style={{
-              backgroundImage: "linear-gradient(#1e40af 1px, transparent 1px), linear-gradient(to right, #1e40af 1px, transparent 1px)",
-              backgroundSize: "60px 60px",
-            }}
-          />
-        </div>
+        <WorldMapBackground />
 
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 lg:py-24 grid lg:grid-cols-2 gap-16 items-center">
 
@@ -194,7 +345,7 @@ export default function Landing() {
                   key={f.title}
                   variants={fadeUp}
                   whileHover={{ y: -4, transition: { type: "spring", stiffness: 400, damping: 20 } }}
-                  className="flex gap-3 p-4 rounded-2xl bg-white/60 backdrop-blur border border-white/60 shadow-sm"
+                  className="flex gap-3 p-4 rounded-2xl bg-white/70 backdrop-blur border border-white/60 shadow-sm"
                 >
                   <div className={cn("w-12 h-12 rounded-xl flex items-center justify-center shrink-0", f.bg)}>
                     {f.icon}
@@ -215,7 +366,6 @@ export default function Landing() {
             animate="show"
             transition={{ delay: 0.25 }}
           >
-            {/* Decorative spinning rings behind card */}
             <div className="relative">
               <div className="absolute inset-0 -m-8 pointer-events-none">
                 <div className="absolute inset-0 rounded-full border border-primary/10 spin-slow" />
@@ -227,7 +377,6 @@ export default function Landing() {
                 transition={{ repeat: Infinity, duration: 5, ease: "easeInOut" }}
                 className="glass-panel rounded-3xl p-8 relative overflow-hidden"
               >
-                {/* Decorative inner glow */}
                 <div className="absolute top-0 right-0 w-64 h-64 bg-primary/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2 pointer-events-none" />
                 <div className="absolute bottom-0 left-0 w-48 h-48 bg-accent/5 rounded-full blur-3xl translate-y-1/2 -translate-x-1/2 pointer-events-none" />
 
@@ -399,6 +548,24 @@ export default function Landing() {
                             )}
                           </AnimatePresence>
                         </motion.div>
+
+                        {/* Transaction password — only shown for logged-in users who have one set */}
+                        {isLoggedIn && hasTransactionPassword && (
+                          <motion.div variants={fadeUp}>
+                            <label className="block text-sm font-medium text-foreground mb-2">
+                              <Lock className="w-3.5 h-3.5 inline mr-1.5 opacity-60" />
+                              Transaction Password
+                            </label>
+                            <input
+                              type="password"
+                              value={txnPwd}
+                              onChange={(e) => setTxnPwd(e.target.value)}
+                              disabled={isBusy}
+                              placeholder="Enter your transaction password"
+                              className="w-full px-4 py-3 rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all outline-none disabled:opacity-60 text-sm"
+                            />
+                          </motion.div>
+                        )}
 
                         <motion.div variants={fadeUp}>
                           <motion.button

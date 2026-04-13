@@ -46,7 +46,7 @@ router.post("/", requireAuth, async (req, res) => {
       return;
     }
 
-    const { recipientEmail, amount, interval, endDate } = parsed.data;
+    const { recipientEmail, amount, interval, endDate, startHour, startDayOfWeek, startDayOfMonth } = parsed.data;
 
     if (recipientEmail === user.email.toLowerCase()) {
       res.status(400).json({ error: "Invalid recipient", message: "You cannot schedule transfers to yourself" });
@@ -67,14 +67,31 @@ router.post("/", requireAuth, async (req, res) => {
         return;
       }
     }
-    
+
+    const now = new Date();
     let nextRunAt = new Date();
-    if (interval === "daily") {
-      nextRunAt.setDate(nextRunAt.getDate() + 1);
+
+    if (interval === "hourly") {
+      // Next full hour
+      nextRunAt.setHours(nextRunAt.getHours() + 1, 0, 0, 0);
+    } else if (interval === "daily") {
+      const hour = startHour ?? 9;
+      nextRunAt.setHours(hour, 0, 0, 0);
+      if (nextRunAt <= now) nextRunAt.setDate(nextRunAt.getDate() + 1);
     } else if (interval === "weekly") {
-      nextRunAt.setDate(nextRunAt.getDate() + 7);
+      const hour = startHour ?? 9;
+      const targetDay = startDayOfWeek ?? 1; // Monday default
+      nextRunAt.setHours(hour, 0, 0, 0);
+      const currentDay = nextRunAt.getDay();
+      let daysUntil = (targetDay - currentDay + 7) % 7;
+      if (daysUntil === 0 && nextRunAt <= now) daysUntil = 7;
+      nextRunAt.setDate(nextRunAt.getDate() + daysUntil);
     } else if (interval === "monthly") {
-      nextRunAt.setMonth(nextRunAt.getMonth() + 1);
+      const hour = startHour ?? 9;
+      const targetDate = Math.min(startDayOfMonth ?? 1, 28); // cap at 28 to avoid month overflow
+      nextRunAt.setDate(targetDate);
+      nextRunAt.setHours(hour, 0, 0, 0);
+      if (nextRunAt <= now) nextRunAt.setMonth(nextRunAt.getMonth() + 1);
     }
 
     let endDt = null;
@@ -103,7 +120,7 @@ router.post("/", requireAuth, async (req, res) => {
     res.json({
       success: true,
       recurringId: newRecurring.id,
-      message: `Recurring transfer of $${amount} ${interval} created successfully. First execution on ${nextRunAt.toLocaleDateString()}.`
+      message: `Recurring transfer of $${amount} ${interval} created. First run: ${nextRunAt.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}.`
     });
   } catch (error: any) {
     req.log.error({ err: error }, "[recurring/post] Error");

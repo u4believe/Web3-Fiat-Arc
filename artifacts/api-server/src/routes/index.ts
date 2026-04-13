@@ -8,6 +8,8 @@ import indexerRouter from "./indexer.js";
 
 import recurringRouter from "./recurring.js";
 import securityRouter from "./security.js";
+import adminRouter from "./admin.js";
+import userRouter from "./user.js";
 
 const router: IRouter = Router();
 
@@ -19,5 +21,7 @@ router.use("/deposit", depositRouter);
 router.use("/indexer", indexerRouter);
 router.use("/recurring", recurringRouter);
 router.use("/security", securityRouter);
+router.use("/admin", adminRouter);
+router.use("/user", userRouter);
 
 export default router;

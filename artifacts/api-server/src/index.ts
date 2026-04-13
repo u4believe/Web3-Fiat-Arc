@@ -1,9 +1,10 @@
 import app from "./app";
 import { logger } from "./lib/logger";
-import { startIndexer, stopIndexer } from "./lib/indexer.js";
+import { startPolygonIndexer, stopPolygonIndexer } from "./lib/polygonIndexer.js";
 import { startRecurringWorker, stopRecurringWorker } from "./lib/recurringWorker.js";
+import { startSweepWorker, stopSweepWorker } from "./lib/circleSweepWorker.js";
+import { probeGasStationStatus } from "./lib/circle.js";
 import { registerPaystackWebhook } from "./lib/paystack.js";
-import { ensureCircleWebhookSubscription } from "./lib/circle.js";
 
 const rawPort = process.env["PORT"];
 
@@ -32,36 +33,32 @@ app.listen(port, (err) => {
     logger.warn({ err }, "Paystack webhook registration error");
   });
 
-  // Register Circle webhook to receive USDC deposit notifications across all networks
-  const circleWebhookUrl = process.env.WEBHOOK_URL
-    ? process.env.WEBHOOK_URL.replace("/paystack/webhook", "/circle/webhook")
-    : null;
-  if (circleWebhookUrl) {
-    ensureCircleWebhookSubscription(circleWebhookUrl).catch((err) => {
-      logger.warn({ err }, "Circle webhook registration error");
-    });
-  }
-
-  // Start the blockchain event indexer in the background
-  startIndexer().catch((err) => {
-    logger.error({ err }, "Failed to start indexer");
-  });
+  // Start the USDC deposit indexer (Polygon Amoy, Base Sepolia, Ethereum Sepolia)
+  startPolygonIndexer();
 
   // Start the recurring transfers worker
   startRecurringWorker();
+
+  // Probe Circle Gas Station status (non-blocking)
+  probeGasStationStatus().catch(() => {});
+
+  // Start the Circle DCW sweep worker (consolidates user USDC into platform wallet)
+  startSweepWorker();
 });
 
 // Graceful shutdown
 process.on("SIGTERM", async () => {
   logger.info("SIGTERM received, shutting down");
-  await stopIndexer();
+  stopPolygonIndexer();
   stopRecurringWorker();
+  stopSweepWorker();
   process.exit(0);
 });
 
 process.on("SIGINT", async () => {
   logger.info("SIGINT received, shutting down");
-  await stopIndexer();
+  stopPolygonIndexer();
   stopRecurringWorker();
+  stopSweepWorker();
   process.exit(0);
 });

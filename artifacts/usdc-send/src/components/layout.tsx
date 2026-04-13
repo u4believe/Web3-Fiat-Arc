@@ -1,15 +1,13 @@
-import { Link, useLocation } from "wouter";
+import { Link } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
-import { Wallet, LogOut, LayoutDashboard, Send } from "lucide-react";
+import { LogOut } from "lucide-react";
 import { motion } from "framer-motion";
-import { cn } from "@/lib/utils";
 import { useGetCurrentUser } from "@workspace/api-client-react";
 
 export function Navbar() {
-  const [location, setLocation] = useLocation();
   const queryClient = useQueryClient();
   const { data: user, isSuccess } = useGetCurrentUser({
-    query: { retry: false }
+    query: { retry: false, queryKey: ["/api/user/me"] }
   });
 
   const handleLogout = () => {
@@ -25,20 +23,20 @@ export function Navbar() {
       transition={{ type: "spring", stiffness: 300, damping: 30 }}
       className="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-md border-b border-border/50 transition-all duration-300"
     >
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="w-full px-4 sm:px-6">
         <div className="flex justify-between items-center h-20">
-          <Link href="/" className="flex items-center gap-2 group">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-accent flex items-center justify-center text-white shadow-lg shadow-primary/20 group-hover:shadow-primary/40 group-hover:-translate-y-0.5 transition-all">
-              <Send className="w-5 h-5" />
-            </div>
-            <span className="font-display font-bold text-2xl text-foreground tracking-tight">USD Send</span>
+          <Link href="/landing" className="flex items-center group">
+            <img src="/EPEE4721.JPG" alt="SEND" className="h-16 w-auto object-contain" />
           </Link>
 
           <div className="flex items-center gap-4">
             {isSuccess && user ? (
               <>
-                <Link href="/" className="hidden md:flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors">
-                  <LayoutDashboard className="w-4 h-4" />
+                <Link
+                  href="/dashboard"
+                  onClick={() => window.dispatchEvent(new CustomEvent("nav:dashboard-overview"))}
+                  className="hidden md:flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors"
+                >
                   Dashboard
                 </Link>
                 <div className="h-8 w-px bg-border hidden md:block"></div>
@@ -50,7 +48,7 @@ export function Navbar() {
                   <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold border border-primary/20">
                     {(user.name || user.email || "?").charAt(0).toUpperCase()}
                   </div>
-                  <button 
+                  <button
                     onClick={handleLogout}
                     className="p-2 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-lg transition-colors"
                     title="Log out"

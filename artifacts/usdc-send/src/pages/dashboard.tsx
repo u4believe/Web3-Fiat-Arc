@@ -43,6 +43,7 @@ import {
   ChevronRight,
   ChevronDown,
   Menu,
+  Home,
 } from "lucide-react";
 import {
   useGetCurrentUser,
@@ -51,12 +52,44 @@ import {
   useGetEscrowHistory,
   useWithdrawCrypto,
 } from "@workspace/api-client-react";
+import { useQuery } from "@tanstack/react-query";
 import { cn, formatCurrency } from "@/lib/utils";
 import { AppLayout, Navbar } from "@/components/layout";
 import { fadeUp, scaleIn, staggerContainer, fadeIn } from "@/lib/motion";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 const ARC_EXPLORER = "https://explorer.arc.io/tx/";
+
+// Block explorer URLs — keys are substrings matched against the network field
+// (network can be "Base Sepolia USDC", "Polygon Amoy USDC", etc.)
+const EXPLORER_BASE: Array<{ match: string; url: string }> = [
+  { match: "base sepolia",      url: "https://sepolia.basescan.org/tx/" },
+  { match: "ethereum sepolia",  url: "https://sepolia.etherscan.io/tx/" },
+  { match: "polygon amoy",      url: "https://amoy.polygonscan.com/tx/" },
+];
+
+function getExplorerUrl(network: string, txHash: string): string | null {
+  if (!txHash) return null;
+  const lower = network.toLowerCase();
+  const entry = EXPLORER_BASE.find((e) => lower.includes(e.match));
+  return entry ? entry.url + txHash : null;
+}
+
+interface UnifiedTx {
+  id: string;
+  category: "deposit" | "withdrawal" | "escrow";
+  currency: "USDC" | "USD";
+  direction: "in" | "out";
+  amount: string;
+  status: string;
+  network: string;
+  txHash: string | null;
+  fromAddress: string | null;
+  toAddress: string | null;
+  description: string;
+  createdAt: string;
+  completedAt: string | null;
+}
 
 interface FullBalance {
   onChainUsdcBalance: string;
@@ -262,25 +295,26 @@ function DashSidebar({ activePage, onNavigate, collapsed, onToggleCollapse, mobi
 
   const sidebarContent = (
     <div className="flex flex-col h-full">
-      {/* Logo / header */}
-      <div className={cn("flex items-center gap-3 px-4 py-5 border-b border-border", collapsed && "justify-center px-2")}>
-        {!collapsed && (
-          <span className="font-display font-bold text-lg text-foreground tracking-tight truncate">Arc</span>
-        )}
-        {collapsed && <Wallet className="w-6 h-6 text-primary" />}
-        {!collapsed && (
-          <button
-            onClick={onToggleCollapse}
-            className="ml-auto p-1 rounded-lg hover:bg-secondary transition-colors"
-            title="Collapse sidebar"
-          >
-            <ChevronLeft className="w-4 h-4 text-muted-foreground" />
-          </button>
-        )}
+      {/* Sidebar header — collapse toggle only */}
+      <div className="flex items-center justify-end px-3 py-3 border-b border-border">
+        <button
+          onClick={onToggleCollapse}
+          className="p-1.5 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground"
+          title="Collapse sidebar"
+        >
+          <ChevronLeft className="w-4 h-4" />
+        </button>
       </div>
 
       {/* Nav items */}
       <nav className="flex-1 overflow-y-auto p-2 space-y-0.5">
+        <SidebarItem
+          icon={<Home className="w-4 h-4" />}
+          label="Home"
+          active={false}
+          onClick={() => setLocation("/landing")}
+          collapsed={collapsed}
+        />
         <SidebarItem
           icon={<LayoutDashboard className="w-4 h-4" />}
           label="Dashboard"
@@ -335,30 +369,32 @@ function DashSidebar({ activePage, onNavigate, collapsed, onToggleCollapse, mobi
           <LogOut className="w-4 h-4 shrink-0" />
           {!collapsed && <span>Log out</span>}
         </button>
-        {collapsed && (
-          <button
-            onClick={onToggleCollapse}
-            className="w-full flex justify-center p-2 rounded-xl hover:bg-secondary transition-colors"
-            title="Expand sidebar"
-          >
-            <ChevronRight className="w-4 h-4 text-muted-foreground" />
-          </button>
-        )}
       </div>
     </div>
   );
 
   return (
     <>
-      {/* Desktop sidebar */}
+      {/* Desktop sidebar — fully hidden when collapsed */}
       <aside
         className={cn(
-          "hidden lg:flex flex-col fixed left-0 top-0 h-screen bg-white/90 backdrop-blur border-r border-border z-30 transition-all duration-300 overflow-hidden",
-          collapsed ? "w-16" : "w-60",
+          "hidden lg:flex flex-col fixed left-0 top-20 h-[calc(100vh-5rem)] bg-white/95 backdrop-blur border-r border-border z-30 transition-all duration-300 w-60",
+          collapsed && "translate-x-[-100%]",
         )}
       >
         {sidebarContent}
       </aside>
+
+      {/* Floating expand button — shown when sidebar is fully hidden */}
+      {collapsed && (
+        <button
+          onClick={onToggleCollapse}
+          className="hidden lg:flex fixed left-0 top-[calc(50%+2.5rem)] -translate-y-1/2 z-40 items-center justify-center bg-white border border-border border-l-0 rounded-r-xl w-6 h-12 shadow-md hover:bg-secondary transition-colors"
+          title="Show sidebar"
+        >
+          <ChevronRight className="w-3.5 h-3.5 text-muted-foreground" />
+        </button>
+      )}
 
       {/* Mobile drawer */}
       <aside
@@ -398,11 +434,46 @@ export default function Dashboard() {
   const { data: history } =
     useGetEscrowHistory({ query: { enabled: !!user } });
 
-  const withdrawCryptoMutation = useWithdrawCrypto({ mutation: { onSuccess: () => refetchBalance() } });
+  // Unified transaction history (deposits + withdrawals + escrow)
+  const { data: txHistory } = useQuery({
+    queryKey: ["/api/user/history"],
+    enabled: !!user,
+    staleTime: 0,                   // always consider data stale — refetch eagerly
+    refetchInterval: 5_000,         // poll every 5 s (matches indexer cadence)
+    refetchOnWindowFocus: true,     // refresh instantly when user switches back to tab
+    refetchIntervalInBackground: false,
+    queryFn: async () => {
+      const res = await fetch(`${BASE}/api/user/history`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+      });
+      if (!res.ok) throw new Error("Failed to fetch history");
+      return res.json() as Promise<{ transactions: UnifiedTx[]; total: number }>;
+    },
+  });
+
+  const [selectedTx, setSelectedTx] = useState<UnifiedTx | null>(null);
+
+  const invalidateHistory = () => queryClient.invalidateQueries({ queryKey: ["/api/user/history"] });
+
+  const withdrawCryptoMutation = useWithdrawCrypto({
+    mutation: {
+      onSuccess: () => {
+        refetchBalance();
+        invalidateHistory();
+      },
+    },
+  });
 
   useEffect(() => {
     if (!isUserLoading && isUserError) setLocation("/login");
   }, [isUserLoading, isUserError, setLocation]);
+
+  // Reset to account overview when the header "Dashboard" link is clicked
+  useEffect(() => {
+    const handler = () => setActivePage("dashboard");
+    window.addEventListener("nav:dashboard-overview", handler);
+    return () => window.removeEventListener("nav:dashboard-overview", handler);
+  }, []);
 
   if (isUserLoading || !user) {
     return (
@@ -445,6 +516,7 @@ export default function Dashboard() {
       refetchBalance();
       refetchPending();
       queryClient.invalidateQueries({ queryKey: ["/api/escrow/history"] });
+      invalidateHistory();
     } catch (err: any) {
       setClaimError(err?.message ?? "Claim failed. Please try again.");
       setClaimStep("error");
@@ -500,281 +572,384 @@ export default function Dashboard() {
         {/* Main content — offset by sidebar width */}
         <main className={cn(
           "flex-1 overflow-y-auto transition-all duration-300",
-          sidebarCollapsed ? "lg:ml-16" : "lg:ml-60",
+          sidebarCollapsed ? "lg:ml-0" : "lg:ml-60",
         )}>
-          <motion.div
-            variants={staggerContainer(0.1, 0)}
-            initial="hidden"
-            animate="show"
-            className="max-w-4xl mx-auto px-4 sm:px-6 py-8 space-y-8"
-          >
-            {/* Mobile menu toggle */}
-            <div className="flex items-center gap-3 lg:hidden">
-              <button
-                onClick={() => setMobileOpen(true)}
-                className="p-2.5 rounded-xl bg-white border border-border shadow-sm"
-              >
-                <Menu className="w-5 h-5" />
-              </button>
-              <span className="font-semibold text-foreground">
-                {activePage === "dashboard" ? "Dashboard" :
-                 activePage === "send-usd"  ? "Send USD"  :
-                 activePage === "send-usdc" ? "Send USDC" :
-                 activePage === "fund"      ? "Fund"      :
-                 activePage === "recurring" ? "Recurring" : "Security"}
-              </span>
-            </div>
+          {/* Mobile top bar */}
+          <div className="sticky top-0 z-20 flex items-center gap-3 px-4 py-3 bg-white/80 backdrop-blur border-b border-border lg:hidden">
+            <button
+              onClick={() => setMobileOpen(true)}
+              className="p-2 rounded-xl bg-white border border-border shadow-sm"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+            <span className="font-semibold text-foreground text-sm">
+              {activePage === "dashboard" ? "Dashboard" :
+               activePage === "send-usd"  ? "Send USD"  :
+               activePage === "send-usdc" ? "Send USDC" :
+               activePage === "fund"      ? "Fund"      :
+               activePage === "recurring" ? "Recurring" : "Security"}
+            </span>
+          </div>
 
-            {/* ── Balance cards ──────────────────────────────────────────── */}
-            <div className="grid md:grid-cols-2 gap-6">
+          <AnimatePresence mode="wait">
+
+            {/* ── DASHBOARD PAGE ─────────────────────────────────────────── */}
+            {activePage === "dashboard" && (
               <motion.div
-                variants={fadeUp}
-                whileHover={{ y: -4, transition: { type: "spring", stiffness: 400, damping: 20 } }}
-                className="glass-panel p-6 rounded-3xl bg-gradient-to-br from-primary to-accent text-white border-none relative overflow-hidden"
+                key="page-dashboard"
+                variants={staggerContainer(0.08, 0)}
+                initial="hidden"
+                animate="show"
+                exit={{ opacity: 0, transition: { duration: 0.15 } }}
+                className="max-w-4xl mx-auto px-4 sm:px-6 py-8 space-y-6"
               >
-                <div className="absolute top-0 right-0 w-48 h-48 bg-white/10 rounded-full blur-2xl -translate-y-1/2 translate-x-1/4 pointer-events-none" />
-                <div className="absolute bottom-0 left-0 w-40 h-40 bg-white/5 rounded-full blur-2xl translate-y-1/2 -translate-x-1/4 pointer-events-none" />
-                <div className="flex items-center gap-3 mb-4 text-white/80 font-medium">
-                  <DollarSign className="w-5 h-5" /> USD Balance
-                </div>
-                <div className="text-4xl lg:text-5xl font-display font-bold tracking-tight mb-1">
-                  {bal ? <AnimatedAmount value={bal.usdBalance} /> : "$0.00"}
-                </div>
-                <div className="text-white/70 text-sm mb-5">Backed 1:1 by USDC · stablecoin</div>
-                <div className="space-y-2 border-t border-white/20 pt-4">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-white/70 flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-green-300 inline-block" /> On-chain escrow
-                    </span>
-                    <span className="font-semibold tabular-nums">{bal ? formatCurrency(bal.onChainUsdcBalance) : "$0.00"}</span>
+                {/* Page header */}
+                <motion.div variants={fadeUp} className="flex items-center justify-between">
+                  <div>
+                    <h1 className="text-2xl font-bold font-display text-foreground">
+                      Welcome back, {user.name.split(" ")[0]} 👋
+                    </h1>
+                    <p className="text-sm text-muted-foreground mt-0.5">Here's your account overview</p>
                   </div>
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-white/70 flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-blue-300 inline-block" /> Credited balance
-                    </span>
-                    <span className="font-semibold tabular-nums">{bal ? formatCurrency(bal.claimedBalance) : "$0.00"}</span>
-                  </div>
-                </div>
-              </motion.div>
+                </motion.div>
 
-              <motion.div
-                variants={fadeUp}
-                whileHover={{ y: -4, transition: { type: "spring", stiffness: 400, damping: 20 } }}
-                className="glass-panel p-6 rounded-3xl relative overflow-hidden"
-              >
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-3 text-muted-foreground font-medium">
-                    <Clock className="w-5 h-5" /> Pending Escrow
-                  </div>
-                  <AnimatePresence>
-                    {hasPending && claimStep === "idle" && (
-                      <motion.button initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.8 }}
-                        whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
-                        onClick={handleClaim} disabled={isClaiming}
-                        className="px-4 py-2 bg-primary text-primary-foreground text-sm font-bold rounded-lg shadow-lg shadow-primary/20 flex items-center gap-2 disabled:opacity-70"
-                      >
-                        <ShieldCheck className="w-4 h-4" /> Claim All
-                      </motion.button>
-                    )}
-                    {claimStep === "success" && (
-                      <motion.button initial={{ opacity: 0 }} animate={{ opacity: 1 }} onClick={handleClaimReset}
-                        className="px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                      >Done</motion.button>
-                    )}
-                  </AnimatePresence>
-                </div>
-                <div className="text-4xl lg:text-5xl font-display font-bold text-foreground tracking-tight mb-2">
-                  {pending ? <AnimatedAmount value={String(pending.totalPendingAmount)} /> : "$0.00"}
-                </div>
-                <div className="text-muted-foreground text-sm mb-2">{pending?.escrows?.length || 0} transfer(s) waiting for you</div>
-                {isClaiming && <ClaimProgress step={claimStep} />}
-                <AnimatePresence>
-                  {claimStep === "success" && (
-                    <motion.div initial={{ opacity: 0, scale: 0.9, height: 0 }} animate={{ opacity: 1, scale: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
-                      className="mt-3 p-3 rounded-xl bg-green-50 border border-green-200 overflow-hidden"
-                    >
-                      <div className="flex items-center gap-2 text-green-700 font-semibold text-sm mb-1">
-                        <CheckCircle2 className="w-4 h-4" />
-                        {claimTotal ? `${claimTotal} USD claimed!` : "Claimed successfully!"}
-                      </div>
-                      {claimTxHash && (
-                        <div className="flex items-center gap-1 text-xs text-green-600 font-mono truncate">
-                          <span className="truncate">{claimTxHash}</span>
-                          <CopyButton text={claimTxHash} />
-                          <a href={`${ARC_EXPLORER}${claimTxHash}`} target="_blank" rel="noopener noreferrer">
-                            <ExternalLink className="w-3 h-3 opacity-60 hover:opacity-100" />
-                          </a>
-                        </div>
-                      )}
-                    </motion.div>
-                  )}
-                  {claimStep === "error" && claimError && (
-                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-2">
-                      <InlineError message={claimError} />
-                      <button onClick={handleClaimReset} className="mt-2 text-sm text-primary hover:underline">Try again</button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </motion.div>
-            </div>
-
-            {/* ── Circle Wallet strip ─────────────────────────────────────── */}
-            {circleWallet && (
-              <motion.div variants={fadeUp}
-                className="glass-panel p-4 rounded-2xl flex items-center justify-between gap-4 bg-gradient-to-r from-violet-50/80 to-blue-50/80 border border-violet-100"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-500 to-blue-500 flex items-center justify-center shrink-0 shadow-lg shadow-violet-200">
-                    <ShieldCheck className="w-4 h-4 text-white" />
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-xs font-semibold text-violet-700 mb-0.5 flex items-center gap-1.5">
-                      Circle Developer Controlled Wallet
-                      <span className="px-1.5 py-0.5 rounded-full bg-violet-100 text-[10px] font-bold text-violet-600">Wallet-Free</span>
-                    </p>
-                    <p className="font-mono text-xs text-muted-foreground truncate">{circleWallet}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  <CopyButton text={circleWallet} />
-                  <a href={`https://amoy.polygonscan.com/address/${circleWallet}`} target="_blank" rel="noopener noreferrer"
-                    className="p-1 rounded hover:bg-secondary transition-colors" title="View on explorer"
+                {/* Balance cards */}
+                <div className="grid md:grid-cols-2 gap-5">
+                  <motion.div
+                    variants={fadeUp}
+                    whileHover={{ y: -4, transition: { type: "spring", stiffness: 400, damping: 20 } }}
+                    className="glass-panel p-6 rounded-3xl bg-gradient-to-br from-primary to-accent text-white border-none relative overflow-hidden"
                   >
-                    <ExternalLink className="w-3.5 h-3.5 text-muted-foreground" />
-                  </a>
+                    <div className="absolute top-0 right-0 w-48 h-48 bg-white/10 rounded-full blur-2xl -translate-y-1/2 translate-x-1/4 pointer-events-none" />
+                    <div className="absolute bottom-0 left-0 w-40 h-40 bg-white/5 rounded-full blur-2xl translate-y-1/2 -translate-x-1/4 pointer-events-none" />
+                    <div className="flex items-center gap-2 mb-4 text-white/80 text-sm font-medium">
+                      <DollarSign className="w-4 h-4" /> USD Balance
+                    </div>
+                    <div className="text-4xl lg:text-5xl font-display font-bold tracking-tight mb-1">
+                      {bal ? <AnimatedAmount value={bal.usdBalance} /> : "$0.00"}
+                    </div>
+                    <div className="text-white/70 text-xs mb-5">Backed 1:1 by USDC · stablecoin</div>
+                    <div className="space-y-2 border-t border-white/20 pt-4">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-white/70 flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-green-300 inline-block" /> On-chain escrow
+                        </span>
+                        <span className="font-semibold tabular-nums text-sm">{bal ? formatCurrency(bal.onChainUsdcBalance) : "$0.00"}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-white/70 flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-blue-300 inline-block" /> Credited balance
+                        </span>
+                        <span className="font-semibold tabular-nums text-sm">{bal ? formatCurrency(bal.claimedBalance) : "$0.00"}</span>
+                      </div>
+                    </div>
+                  </motion.div>
+
+                  <motion.div
+                    variants={fadeUp}
+                    whileHover={{ y: -4, transition: { type: "spring", stiffness: 400, damping: 20 } }}
+                    className="glass-panel p-6 rounded-3xl relative overflow-hidden"
+                  >
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2 text-muted-foreground text-sm font-medium">
+                        <Clock className="w-4 h-4" /> Pending Escrow
+                      </div>
+                      <AnimatePresence>
+                        {hasPending && claimStep === "idle" && (
+                          <motion.button initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.8 }}
+                            whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+                            onClick={handleClaim} disabled={isClaiming}
+                            className="px-3 py-1.5 bg-primary text-primary-foreground text-xs font-bold rounded-lg shadow-lg shadow-primary/20 flex items-center gap-1.5 disabled:opacity-70"
+                          >
+                            <ShieldCheck className="w-3.5 h-3.5" /> Claim All
+                          </motion.button>
+                        )}
+                        {claimStep === "success" && (
+                          <motion.button initial={{ opacity: 0 }} animate={{ opacity: 1 }} onClick={handleClaimReset}
+                            className="px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                          >Done</motion.button>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                    <div className="text-4xl lg:text-5xl font-display font-bold text-foreground tracking-tight mb-1">
+                      {pending ? <AnimatedAmount value={String(pending.totalPendingAmount)} /> : "$0.00"}
+                    </div>
+                    <div className="text-muted-foreground text-xs mb-2">{pending?.escrows?.length || 0} transfer(s) awaiting claim</div>
+                    {isClaiming && <ClaimProgress step={claimStep} />}
+                    <AnimatePresence>
+                      {claimStep === "success" && (
+                        <motion.div initial={{ opacity: 0, scale: 0.9, height: 0 }} animate={{ opacity: 1, scale: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
+                          className="mt-3 p-3 rounded-xl bg-green-50 border border-green-200 overflow-hidden"
+                        >
+                          <div className="flex items-center gap-2 text-green-700 font-semibold text-sm mb-1">
+                            <CheckCircle2 className="w-4 h-4" />
+                            {claimTotal ? `${claimTotal} USD claimed!` : "Claimed successfully!"}
+                          </div>
+                          {claimTxHash && (
+                            <div className="flex items-center gap-1 text-xs text-green-600 font-mono truncate">
+                              <span className="truncate">{claimTxHash}</span>
+                              <CopyButton text={claimTxHash} />
+                              <a href={`${ARC_EXPLORER}${claimTxHash}`} target="_blank" rel="noopener noreferrer">
+                                <ExternalLink className="w-3 h-3 opacity-60 hover:opacity-100" />
+                              </a>
+                            </div>
+                          )}
+                        </motion.div>
+                      )}
+                      {claimStep === "error" && claimError && (
+                        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-2">
+                          <InlineError message={claimError} />
+                          <button onClick={handleClaimReset} className="mt-2 text-sm text-primary hover:underline">Try again</button>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </motion.div>
+                </div>
+
+                {/* Deposit address strip */}
+                {circleWallet && (
+                  <motion.div variants={fadeUp}
+                    className="glass-panel p-4 rounded-2xl flex items-center justify-between gap-4 bg-gradient-to-r from-violet-50/80 to-blue-50/80 border border-violet-100"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-500 to-blue-500 flex items-center justify-center shrink-0 shadow-lg shadow-violet-200">
+                        <ShieldCheck className="w-4 h-4 text-white" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold text-violet-700 mb-0.5 flex items-center gap-1.5">
+                          Deposit Address
+                          <span className="px-1.5 py-0.5 rounded-full bg-violet-100 text-[10px] font-bold text-violet-600">Circle Wallet</span>
+                        </p>
+                        <p className="font-mono text-xs text-muted-foreground truncate">{circleWallet}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <CopyButton text={circleWallet} />
+                      <a href={`https://sepolia.basescan.org/address/${circleWallet}`} target="_blank" rel="noopener noreferrer"
+                        className="p-1 rounded hover:bg-secondary transition-colors" title="View on Base Sepolia explorer"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5 text-muted-foreground" />
+                      </a>
+                    </div>
+                  </motion.div>
+                )}
+
+                {/* Transaction history */}
+                <motion.div variants={fadeUp} className="bg-white/80 backdrop-blur rounded-3xl shadow-sm border border-border overflow-hidden">
+                  <div className="px-6 py-5 border-b border-border/60 flex items-center justify-between">
+                    <h2 className="font-bold text-foreground flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-muted-foreground" /> Transaction History
+                    </h2>
+                    {txHistory?.total ? (
+                      <span className="text-xs text-muted-foreground">{txHistory.total} total</span>
+                    ) : null}
+                  </div>
+                  <div className="p-4">
+                    {!txHistory?.transactions?.length ? (
+                      <motion.div variants={scaleIn} className="text-center py-16 text-muted-foreground">
+                        <Clock className="w-10 h-10 mx-auto mb-3 opacity-20" />
+                        <p className="text-sm">No transactions yet</p>
+                        <p className="text-xs mt-1 opacity-60">Your activity will appear here</p>
+                      </motion.div>
+                    ) : (
+                      <motion.div variants={staggerContainer(0.06)} className="space-y-2">
+                        {txHistory.transactions.map((tx) => {
+                          const isIn = tx.direction === "in";
+                          const isCrypto = tx.currency === "USDC";
+                          const statusColor =
+                            tx.status === "completed" || tx.status === "claimed"
+                              ? "text-green-600"
+                              : tx.status === "pending" || tx.status === "pending_transfer"
+                              ? "text-amber-600"
+                              : "text-muted-foreground";
+                          const explorerUrl = getExplorerUrl(tx.network, tx.txHash ?? "");
+                          const label = isCrypto
+                            ? isIn ? `Received USDC` : `Sent USDC`
+                            : isIn ? `Received USD` : `Sent USD`;
+                          return (
+                            <motion.div
+                              key={tx.id}
+                              variants={fadeUp}
+                              whileHover={{ x: 3, transition: { type: "spring", stiffness: 400, damping: 20 } }}
+                              className="flex items-center justify-between p-4 rounded-2xl border border-border/50 hover:bg-secondary/20 transition-colors gap-4 cursor-pointer"
+                              onClick={() => setSelectedTx(selectedTx?.id === tx.id ? null : tx)}
+                            >
+                              <div className="flex items-center gap-3 min-w-0">
+                                <div className={cn("w-9 h-9 rounded-full flex items-center justify-center shrink-0",
+                                  isIn ? "bg-green-100 text-green-600" : "bg-blue-100 text-blue-600")}>
+                                  {isIn ? <ArrowDownLeft className="w-4 h-4" /> : <ArrowUpRight className="w-4 h-4" />}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-2">
+                                    <p className="font-semibold text-foreground text-sm">{label}</p>
+                                    <span className="text-xs px-1.5 py-0.5 rounded-full bg-secondary text-muted-foreground">{tx.network}</span>
+                                  </div>
+                                  <p className="text-xs text-muted-foreground flex items-center gap-1.5 flex-wrap mt-0.5">
+                                    <span>{format(new Date(tx.createdAt), "MMM d, yyyy · h:mm a")}</span>
+                                    <span className={cn("font-medium capitalize", statusColor)}>{tx.status.replace(/_/g, " ")}</span>
+                                  </p>
+                                  {/* Expanded detail row */}
+                                  <AnimatePresence>
+                                    {selectedTx?.id === tx.id && (
+                                      <motion.div
+                                        initial={{ opacity: 0, height: 0 }}
+                                        animate={{ opacity: 1, height: "auto" }}
+                                        exit={{ opacity: 0, height: 0 }}
+                                        className="overflow-hidden"
+                                      >
+                                        <div className="mt-2 space-y-1 text-xs text-muted-foreground border-t border-border/40 pt-2">
+                                          {tx.fromAddress && (
+                                            <div className="flex items-start gap-1.5">
+                                              <span className="shrink-0 font-medium text-foreground">From:</span>
+                                              <span className="break-all font-mono">{tx.fromAddress}</span>
+                                            </div>
+                                          )}
+                                          {tx.toAddress && (
+                                            <div className="flex items-start gap-1.5">
+                                              <span className="shrink-0 font-medium text-foreground">To:</span>
+                                              <span className="break-all font-mono">{tx.toAddress}</span>
+                                            </div>
+                                          )}
+                                          {!tx.fromAddress && !tx.toAddress && isCrypto && tx.direction === "in" && (
+                                            <div className="flex items-start gap-1.5">
+                                              <span className="shrink-0 font-medium text-foreground">Network:</span>
+                                              <span>{tx.network}</span>
+                                            </div>
+                                          )}
+                                          {explorerUrl && (
+                                            <a href={explorerUrl} target="_blank" rel="noopener noreferrer"
+                                              className="flex items-center gap-1 text-primary hover:underline mt-1"
+                                              onClick={(e) => e.stopPropagation()}
+                                            >
+                                              View on explorer <ExternalLink className="w-3 h-3" />
+                                            </a>
+                                          )}
+                                        </div>
+                                      </motion.div>
+                                    )}
+                                  </AnimatePresence>
+                                </div>
+                              </div>
+                              <div className="flex flex-col items-end shrink-0 gap-1">
+                                <p className={cn("font-bold tabular-nums", isIn ? "text-green-600" : "text-foreground")}>
+                                  {isIn ? "+" : "-"}{isCrypto ? `$${parseFloat(tx.amount).toFixed(2)} USDC` : formatCurrency(tx.amount)}
+                                </p>
+                                <ChevronDown className={cn("w-3 h-3 text-muted-foreground transition-transform", selectedTx?.id === tx.id && "rotate-180")} />
+                              </div>
+                            </motion.div>
+                          );
+                        })}
+                      </motion.div>
+                    )}
+                  </div>
+                </motion.div>
+              </motion.div>
+            )}
+
+            {/* ── NON-DASHBOARD PAGES ─────────────────────────────────────── */}
+            {activePage !== "dashboard" && (
+              <motion.div
+                key={`page-${activePage}`}
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8, transition: { duration: 0.15 } }}
+                transition={{ duration: 0.25 }}
+                className="max-w-3xl mx-auto px-4 sm:px-6 py-8 space-y-6"
+              >
+                {/* Page header */}
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setActivePage("dashboard")}
+                    className="p-2 rounded-xl border border-border bg-white hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground"
+                    title="Back to Dashboard"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <div>
+                    <h1 className="text-xl font-bold font-display text-foreground">
+                      {activePage === "send-usd"  ? "Send USD"       :
+                       activePage === "send-usdc" ? "Send USDC"      :
+                       activePage === "fund"      ? "Add Funds"      :
+                       activePage === "recurring" ? "Recurring"      : "Security"}
+                    </h1>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {activePage === "send-usd"  ? "Transfer USD to any email address"          :
+                       activePage === "send-usdc" ? "Withdraw USDC to an external wallet"        :
+                       activePage === "fund"      ? "Deposit USDC or fund via bank"              :
+                       activePage === "recurring" ? "Manage your scheduled transfers"            :
+                                                    "Transaction password & authorization key"}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Page card */}
+                <div className="bg-white/90 backdrop-blur rounded-3xl shadow-sm border border-border overflow-hidden">
+                  <div className="p-6 lg:p-8">
+                    <AnimatePresence mode="wait">
+
+                      {activePage === "send-usd" && (
+                        <motion.div key="send-usd" variants={fadeIn} initial="hidden" animate="show" exit="hidden">
+                          <DashboardSendForm onSuccess={() => setActivePage("dashboard")} hasTransactionPassword={(user as any).hasTransactionPassword} />
+                        </motion.div>
+                      )}
+
+                      {activePage === "send-usdc" && (
+                        <motion.div key="send-usdc" variants={fadeIn} initial="hidden" animate="show" exit="hidden">
+                          <CryptoWithdrawalForm mutation={withdrawCryptoMutation} maxAmount={balance?.claimedBalance || "0"} circleWalletAddress={circleWallet} hasTransactionPassword={(user as any).hasTransactionPassword} />
+                        </motion.div>
+                      )}
+
+                      {activePage === "fund" && (
+                        <motion.div key="fund" variants={fadeIn} initial="hidden" animate="show" exit="hidden">
+                          <div className="flex gap-2 p-1 bg-secondary rounded-xl mb-8">
+                            {(["crypto", "bank"] as const).map((method) => (
+                              <button key={method} onClick={() => setFundMethod(method)}
+                                className={cn("flex-1 py-2 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 transition-all relative",
+                                  fundMethod === method ? "text-foreground" : "text-muted-foreground hover:text-foreground")}
+                              >
+                                {fundMethod === method && (
+                                  <motion.div layoutId="fund-tab-bg" className="absolute inset-0 bg-white rounded-lg shadow-sm"
+                                    transition={{ type: "spring", stiffness: 400, damping: 30 }} />
+                                )}
+                                <span className="relative z-10 flex items-center gap-2">
+                                  {method === "crypto" ? <><QrCode className="w-4 h-4" /> Fund with Crypto</> : <><Landmark className="w-4 h-4" /> Direct Bank Deposit</>}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                          <AnimatePresence mode="wait">
+                            {fundMethod === "crypto" ? (
+                              <motion.div key="fund-crypto" variants={scaleIn} initial="hidden" animate="show" exit="hidden">
+                                <CryptoDepositPanel walletAddress={(user as any).circleWalletAddress} />
+                              </motion.div>
+                            ) : (
+                              <motion.div key="fund-bank" variants={scaleIn} initial="hidden" animate="show" exit="hidden">
+                                <BankDepositForm onSuccess={() => setActivePage("dashboard")} />
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </motion.div>
+                      )}
+
+                      {activePage === "recurring" && (
+                        <motion.div key="recurring" variants={fadeIn} initial="hidden" animate="show" exit="hidden">
+                          <RecurringTransferTab userEmail={user.email} availableBalance={parseFloat(balance?.claimedBalance ?? "0")} hasTransactionPassword={(user as any).hasTransactionPassword} />
+                        </motion.div>
+                      )}
+
+                      {activePage === "security" && (
+                        <motion.div key="security" variants={fadeIn} initial="hidden" animate="show" exit="hidden">
+                          <SecurityTab user={user as any} onSecurityUpdated={() => queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] })} />
+                        </motion.div>
+                      )}
+
+                    </AnimatePresence>
+                  </div>
                 </div>
               </motion.div>
             )}
 
-            {/* ── Page content ───────────────────────────────────────────── */}
-            <motion.div variants={fadeUp} className="bg-white/80 backdrop-blur rounded-3xl shadow-sm border border-border overflow-hidden">
-              <div className="p-6 lg:p-8 min-h-[400px]">
-                <AnimatePresence mode="wait">
-
-                  {/* Dashboard → History */}
-                  {activePage === "dashboard" && (
-                    <motion.div key="dashboard" variants={fadeIn} initial="hidden" animate="show" exit="hidden" className="space-y-6">
-                      <h2 className="text-lg font-bold text-foreground flex items-center gap-2">
-                        <Clock className="w-5 h-5 text-muted-foreground" /> Transaction History
-                      </h2>
-                      {!history || (!(history.sent?.length) && !(history.received?.length)) ? (
-                        <motion.div variants={scaleIn} className="text-center py-12 text-muted-foreground">
-                          <Clock className="w-12 h-12 mx-auto mb-4 opacity-20" />
-                          <p>No transactions yet</p>
-                        </motion.div>
-                      ) : (
-                        <motion.div variants={staggerContainer(0.06)} className="space-y-3">
-                          {[...(history.received || []), ...(history.sent || [])]
-                            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-                            .map((tx) => {
-                              const isReceived = !!tx.recipientEmail && tx.recipientEmail === user.email;
-                              const statusColor = tx.status === "claimed" ? "text-green-600" : tx.status === "pending" ? "text-amber-600" : "text-muted-foreground";
-                              return (
-                                <motion.div key={tx.id} variants={fadeUp}
-                                  whileHover={{ x: 4, transition: { type: "spring", stiffness: 400, damping: 20 } }}
-                                  className="flex items-center justify-between p-4 rounded-2xl border border-border/50 hover:bg-secondary/20 transition-colors gap-4 cursor-default"
-                                >
-                                  <div className="flex items-center gap-4 min-w-0">
-                                    <motion.div whileHover={{ scale: 1.1, rotate: isReceived ? -10 : 10 }}
-                                      className={cn("w-10 h-10 rounded-full flex items-center justify-center shrink-0", isReceived ? "bg-green-100 text-green-600" : "bg-blue-100 text-blue-600")}
-                                    >
-                                      {isReceived ? <ArrowDownLeft className="w-5 h-5" /> : <ArrowUpRight className="w-5 h-5" />}
-                                    </motion.div>
-                                    <div className="min-w-0">
-                                      <p className="font-semibold text-foreground">{isReceived ? "Received USD" : "Sent USD"}</p>
-                                      <p className="text-xs text-muted-foreground flex items-center gap-1.5 flex-wrap">
-                                        <span>{format(new Date(tx.createdAt), "MMM d, yyyy 'at' h:mm a")}</span>
-                                        <span className="w-1 h-1 rounded-full bg-border" />
-                                        <span className={statusColor}>{tx.status}</span>
-                                        {tx.txHash && (
-                                          <>
-                                            <span className="w-1 h-1 rounded-full bg-border" />
-                                            <a href={`${ARC_EXPLORER}${tx.txHash}`} target="_blank" rel="noopener noreferrer"
-                                              className="flex items-center gap-0.5 hover:text-primary transition-colors"
-                                            >tx <ExternalLink className="w-2.5 h-2.5" /></a>
-                                          </>
-                                        )}
-                                      </p>
-                                    </div>
-                                  </div>
-                                  <div className="text-right shrink-0">
-                                    <p className={cn("font-bold text-lg", isReceived ? "text-green-600" : "text-foreground")}>
-                                      {isReceived ? "+" : "-"}{formatCurrency(tx.amount)}
-                                    </p>
-                                  </div>
-                                </motion.div>
-                              );
-                            })}
-                        </motion.div>
-                      )}
-                    </motion.div>
-                  )}
-
-                  {/* Send → Send USD */}
-                  {activePage === "send-usd" && (
-                    <motion.div key="send-usd" variants={fadeIn} initial="hidden" animate="show" exit="hidden" className="max-w-2xl mx-auto">
-                      <DashboardSendForm onSuccess={() => setActivePage("dashboard")} hasTransactionPassword={(user as any).hasTransactionPassword} />
-                    </motion.div>
-                  )}
-
-                  {/* Send → Send USDC (crypto withdrawal) */}
-                  {activePage === "send-usdc" && (
-                    <motion.div key="send-usdc" variants={fadeIn} initial="hidden" animate="show" exit="hidden" className="max-w-2xl mx-auto">
-                      <CryptoWithdrawalForm mutation={withdrawCryptoMutation} maxAmount={balance?.claimedBalance || "0"} circleWalletAddress={circleWallet} hasTransactionPassword={(user as any).hasTransactionPassword} />
-                    </motion.div>
-                  )}
-
-                  {/* Fund */}
-                  {activePage === "fund" && (
-                    <motion.div key="fund" variants={fadeIn} initial="hidden" animate="show" exit="hidden" className="max-w-2xl mx-auto">
-                      <div className="flex gap-2 p-1 bg-secondary rounded-xl mb-8">
-                        {(["crypto", "bank"] as const).map((method) => (
-                          <button key={method} onClick={() => setFundMethod(method)}
-                            className={cn("flex-1 py-2 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 transition-all relative",
-                              fundMethod === method ? "text-foreground" : "text-muted-foreground hover:text-foreground")}
-                          >
-                            {fundMethod === method && (
-                              <motion.div layoutId="fund-tab-bg" className="absolute inset-0 bg-white rounded-lg shadow-sm"
-                                transition={{ type: "spring", stiffness: 400, damping: 30 }} />
-                            )}
-                            <span className="relative z-10 flex items-center gap-2">
-                              {method === "crypto" ? <><QrCode className="w-4 h-4" /> Fund with Crypto</> : <><Landmark className="w-4 h-4" /> Direct Bank Deposit</>}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                      <AnimatePresence mode="wait">
-                        {fundMethod === "crypto" ? (
-                          <motion.div key="fund-crypto" variants={scaleIn} initial="hidden" animate="show" exit="hidden">
-                            <CryptoDepositPanel walletAddress={(user as any).circleWalletAddress} />
-                          </motion.div>
-                        ) : (
-                          <motion.div key="fund-bank" variants={scaleIn} initial="hidden" animate="show" exit="hidden">
-                            <BankDepositForm onSuccess={() => setActivePage("dashboard")} />
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                    </motion.div>
-                  )}
-
-                  {/* Recurring */}
-                  {activePage === "recurring" && (
-                    <motion.div key="recurring" variants={fadeIn} initial="hidden" animate="show" exit="hidden" className="max-w-2xl mx-auto">
-                      <RecurringTransferTab userEmail={user.email} availableBalance={parseFloat(balance?.claimedBalance ?? "0")} hasTransactionPassword={(user as any).hasTransactionPassword} />
-                    </motion.div>
-                  )}
-
-                  {/* Security */}
-                  {activePage === "security" && (
-                    <motion.div key="security" variants={fadeIn} initial="hidden" animate="show" exit="hidden" className="max-w-2xl mx-auto">
-                      <SecurityTab user={user as any} onSecurityUpdated={() => queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] })} />
-                    </motion.div>
-                  )}
-
-                </AnimatePresence>
-              </div>
-            </motion.div>
-          </motion.div>
+          </AnimatePresence>
         </main>
       </div>
     </div>
@@ -783,20 +958,32 @@ export default function Dashboard() {
 
 // ─── Withdrawal sub-forms ─────────────────────────────────────────────────────
 
+const EVM_RE = /^0x[0-9a-fA-F]{40}$/;
+const WITHDRAWAL_FEE = 0.10;
+
 function CryptoWithdrawalForm({ mutation, maxAmount, circleWalletAddress, hasTransactionPassword }: { mutation: any; maxAmount: string; circleWalletAddress?: string; hasTransactionPassword?: boolean }) {
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [errorMsg,   setErrorMsg]   = useState<string | null>(null);
   const [txnPwd,     setTxnPwd]     = useState("");
 
   const schema = z.object({
-    walletAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/, "Must be a valid EVM address (0x...)"),
+    walletAddress: z.string().regex(EVM_RE, "Invalid EVM address — must be 0x followed by 40 hex characters"),
     amount: z
       .string()
       .refine((v) => Number(v) > 0, "Amount must be positive")
-      .refine((v) => Number(v) <= Number(maxAmount), `Max available: $${maxAmount}`),
+      .refine(
+        (v) => Number(v) + WITHDRAWAL_FEE <= Number(maxAmount),
+        `Insufficient balance — you need amount + $${WITHDRAWAL_FEE.toFixed(2)} fee`,
+      ),
   });
 
-  const { register, handleSubmit, formState: { errors }, reset, setValue } = useForm({ resolver: zodResolver(schema) });
+  const { register, handleSubmit, formState: { errors }, reset, setValue, watch } = useForm({ resolver: zodResolver(schema) });
+  const watchedAddr   = watch("walletAddress", "");
+  const watchedAmount = watch("amount", "");
+  const addrValid     = EVM_RE.test(watchedAddr ?? "");
+  const addrDirty     = (watchedAddr ?? "").length > 0;
+  const parsedAmount  = parseFloat(watchedAmount) || 0;
+  const totalAmount   = parsedAmount > 0 ? parsedAmount + WITHDRAWAL_FEE : 0;
 
   const onSubmit = async (data: any) => {
     setSuccessMsg(null);
@@ -851,9 +1038,32 @@ function CryptoWithdrawalForm({ mutation, maxAmount, circleWalletAddress, hasTra
         <input
           {...register("walletAddress")}
           placeholder="0x…"
-          className="w-full px-4 py-3 rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 outline-none transition-all"
+          className={cn(
+            "w-full px-4 py-3 rounded-xl bg-white border-2 border-border focus:ring-4 outline-none transition-all font-mono text-sm",
+            errors.walletAddress
+              ? "border-destructive focus:border-destructive focus:ring-destructive/10"
+              : addrDirty && addrValid
+              ? "border-green-400 focus:border-green-500 focus:ring-green-100"
+              : addrDirty
+              ? "border-amber-400 focus:border-amber-500 focus:ring-amber-100"
+              : "focus:border-primary focus:ring-primary/10",
+          )}
         />
-        {errors.walletAddress && <p className="text-destructive text-sm mt-1">{errors.walletAddress.message as string}</p>}
+        <AnimatePresence>
+          {errors.walletAddress ? (
+            <motion.p key="err" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="text-destructive text-sm mt-1.5 flex items-center gap-1.5">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0" />{errors.walletAddress.message as string}
+            </motion.p>
+          ) : addrDirty && addrValid ? (
+            <motion.p key="ok" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="text-green-600 text-sm mt-1.5 flex items-center gap-1.5">
+              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> Valid EVM address
+            </motion.p>
+          ) : addrDirty ? (
+            <motion.p key="bad" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="text-amber-600 text-sm mt-1.5 flex items-center gap-1.5">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0" /> Not a valid EVM address — must start with 0x and be 42 characters total
+            </motion.p>
+          ) : null}
+        </AnimatePresence>
       </motion.div>
 
       <motion.div variants={fadeUp}>
@@ -872,6 +1082,22 @@ function CryptoWithdrawalForm({ mutation, maxAmount, circleWalletAddress, hasTra
           <span className="absolute right-4 inset-y-0 flex items-center text-muted-foreground text-sm">USD</span>
         </div>
         {errors.amount && <p className="text-destructive text-sm mt-1">{errors.amount.message as string}</p>}
+      </motion.div>
+
+      {/* Fee breakdown */}
+      <motion.div variants={fadeUp} className="rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 space-y-1.5 text-sm">
+        <div className="flex items-center justify-between text-muted-foreground">
+          <span>Amount to receive</span>
+          <span className="font-medium text-foreground">{parsedAmount > 0 ? `$${parsedAmount.toFixed(2)}` : "—"} USDC</span>
+        </div>
+        <div className="flex items-center justify-between text-muted-foreground">
+          <span>Network fee</span>
+          <span className="font-medium text-amber-700">${WITHDRAWAL_FEE.toFixed(2)} USDC</span>
+        </div>
+        <div className="border-t border-amber-200 pt-1.5 flex items-center justify-between font-semibold text-foreground">
+          <span>Total deducted</span>
+          <span>{totalAmount > 0 ? `$${totalAmount.toFixed(2)}` : "—"} USDC</span>
+        </div>
       </motion.div>
 
       {hasTransactionPassword && (
@@ -962,6 +1188,8 @@ function DashboardSendForm({ onSuccess, hasTransactionPassword }: { onSuccess: (
       setSuccessEmail(data.recipientEmail.toLowerCase().trim());
       setSuccessAmount(data.amount);
       setDidSucceed(true);
+      refetchBalance();
+      invalidateHistory();
     } catch (err: any) {
       setFormError(err?.message ?? "Failed to send payment. Please try again.");
     } finally {
@@ -1190,7 +1418,7 @@ interface RecurringTransfer {
   id: number;
   recipientEmail: string;
   amount: string;
-  interval: "daily" | "weekly" | "monthly";
+  interval: "hourly" | "daily" | "weekly" | "monthly";
   nextRunAt: string;
   endDate: string | null;
   status: "active" | "completed" | "cancelled";
@@ -1204,7 +1432,10 @@ const recurringSchema = z.object({
     .min(1, "Amount is required")
     .refine((v) => !isNaN(Number(v)) && Number(v) > 0, "Must be a positive number")
     .refine((v) => Number(v) >= 0.01, "Minimum is $0.01 USD"),
-  interval: z.enum(["daily", "weekly", "monthly"]),
+  interval: z.enum(["hourly", "daily", "weekly", "monthly"]),
+  startHour: z.number().int().min(0).max(23).optional(),
+  startDayOfWeek: z.number().int().min(0).max(6).optional(),
+  startDayOfMonth: z.number().int().min(1).max(31).optional(),
   endDate: z.string().optional(),
 });
 
@@ -1220,10 +1451,11 @@ function RecurringTransferTab({ userEmail, availableBalance, hasTransactionPassw
   const [txnPwd,    setTxnPwd]      = useState("");
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
 
-  const { register, handleSubmit, reset, formState: { errors } } = useForm<RecurringValues>({
+  const { register, handleSubmit, reset, watch, setValue, formState: { errors } } = useForm<RecurringValues>({
     resolver: zodResolver(recurringSchema),
-    defaultValues: { interval: "monthly" },
+    defaultValues: { interval: "monthly", startHour: 9, startDayOfWeek: 1, startDayOfMonth: 1 },
   });
+  const selectedInterval = watch("interval");
 
   const authHeaders = () => {
     const jwt = localStorage.getItem("token");
@@ -1256,11 +1488,14 @@ function RecurringTransferTab({ userEmail, availableBalance, hasTransactionPassw
     }
     setIsSubmitting(true);
     try {
-      const body: Record<string, string> = {
+      const body: Record<string, any> = {
         recipientEmail: data.recipientEmail.toLowerCase().trim(),
         amount: data.amount,
         interval: data.interval,
       };
+      if (data.interval !== "hourly" && data.startHour !== undefined) body["startHour"] = data.startHour;
+      if (data.interval === "weekly" && data.startDayOfWeek !== undefined) body["startDayOfWeek"] = data.startDayOfWeek;
+      if (data.interval === "monthly" && data.startDayOfMonth !== undefined) body["startDayOfMonth"] = data.startDayOfMonth;
       if (data.endDate) body["endDate"] = new Date(data.endDate).toISOString();
       if (hasTransactionPassword && txnPwd) body["transactionPassword"] = txnPwd;
       const res = await fetch(`${BASE}/api/recurring`, {
@@ -1298,7 +1533,7 @@ function RecurringTransferTab({ userEmail, availableBalance, hasTransactionPassw
   const activeTransfers    = transfers.filter((t) => t.status === "active");
   const inactiveTransfers  = transfers.filter((t) => t.status !== "active");
 
-  const intervalLabel: Record<string, string> = { daily: "Daily", weekly: "Weekly", monthly: "Monthly" };
+  const intervalLabel: Record<string, string> = { hourly: "Hourly", daily: "Daily", weekly: "Weekly", monthly: "Monthly" };
   const statusColor: Record<string, string> = {
     active:    "bg-green-100 text-green-700",
     completed: "bg-secondary text-muted-foreground",
@@ -1410,17 +1645,68 @@ function RecurringTransferTab({ userEmail, availableBalance, hasTransactionPassw
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-foreground mb-1.5">Interval</label>
+                    <label className="block text-sm font-medium text-foreground mb-1.5">Frequency</label>
                     <select
                       {...register("interval")}
                       className="w-full px-3 py-2.5 rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all outline-none text-sm"
                     >
+                      <option value="hourly">Hourly</option>
                       <option value="daily">Daily</option>
                       <option value="weekly">Weekly</option>
                       <option value="monthly">Monthly</option>
                     </select>
                   </div>
                 </div>
+
+                {/* Timing fields — conditional on interval */}
+                {selectedInterval !== "hourly" && (
+                  <div className="grid grid-cols-2 gap-3">
+                    {/* Start hour — all non-hourly intervals */}
+                    <div>
+                      <label className="block text-sm font-medium text-foreground mb-1.5">Start Time (hour)</label>
+                      <select
+                        {...register("startHour", { valueAsNumber: true })}
+                        className="w-full px-3 py-2.5 rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all outline-none text-sm"
+                      >
+                        {Array.from({ length: 24 }, (_, h) => (
+                          <option key={h} value={h}>
+                            {h === 0 ? "12:00 AM" : h < 12 ? `${h}:00 AM` : h === 12 ? "12:00 PM" : `${h - 12}:00 PM`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Day of week — weekly only */}
+                    {selectedInterval === "weekly" && (
+                      <div>
+                        <label className="block text-sm font-medium text-foreground mb-1.5">Day of Week</label>
+                        <select
+                          {...register("startDayOfWeek", { valueAsNumber: true })}
+                          className="w-full px-3 py-2.5 rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all outline-none text-sm"
+                        >
+                          {["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"].map((d, i) => (
+                            <option key={i} value={i}>{d}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* Day of month — monthly only */}
+                    {selectedInterval === "monthly" && (
+                      <div>
+                        <label className="block text-sm font-medium text-foreground mb-1.5">Day of Month</label>
+                        <select
+                          {...register("startDayOfMonth", { valueAsNumber: true })}
+                          className="w-full px-3 py-2.5 rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all outline-none text-sm"
+                        >
+                          {Array.from({ length: 28 }, (_, i) => (
+                            <option key={i + 1} value={i + 1}>{i + 1}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* End date */}
                 <div>
@@ -1593,7 +1879,8 @@ type SecurityView =
   | "set-txn-otp"   | "set-txn-pwd"
   | "gen-pak-otp"   | "gen-pak-reveal"
   | "chg-login-pak" | "chg-login-otp"
-  | "chg-txn-pak"   | "chg-txn-otp";
+  | "chg-txn-pak"   | "chg-txn-otp"
+  | "del-acct-pak"  | "del-acct-otp";
 
 function PasswordInput({ label, placeholder, value, onChange, disabled }: {
   label: string; placeholder?: string; value: string;
@@ -1624,10 +1911,11 @@ function PasswordInput({ label, placeholder, value, onChange, disabled }: {
   );
 }
 
-function OtpStep({ label, otp, setOtp, onResend, onSubmit, isLoading, error }: {
+function OtpStep({ label, otp, setOtp, onResend, onSubmit, isLoading, error, submitLabel, submitClassName }: {
   label: string; otp: string; setOtp: (v: string) => void;
   onResend: () => void; onSubmit: () => void;
   isLoading: boolean; error: string | null;
+  submitLabel?: string; submitClassName?: string;
 }) {
   return (
     <div className="space-y-4">
@@ -1649,10 +1937,11 @@ function OtpStep({ label, otp, setOtp, onResend, onSubmit, isLoading, error }: {
         whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
         onClick={onSubmit}
         disabled={isLoading || otp.length < 6}
-        className="w-full bg-primary text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-primary/25 transition-shadow disabled:opacity-70 text-sm"
+        className={cn("w-full font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-shadow disabled:opacity-70 text-sm",
+          submitClassName ?? "bg-primary text-white hover:shadow-lg hover:shadow-primary/25")}
       >
         {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
-        {isLoading ? "Verifying…" : "Verify Code"}
+        {isLoading ? "Verifying…" : (submitLabel ?? "Verify Code")}
       </motion.button>
       <button onClick={onResend} disabled={isLoading} className="w-full text-sm text-muted-foreground hover:text-foreground transition-colors py-1">
         Resend code
@@ -1684,7 +1973,7 @@ function SecurityTab({ user, onSecurityUpdated }: { user: SecurityUser; onSecuri
 
   const api = async (path: string, body?: object) => {
     const res = await fetch(`${BASE}/api/security${path}`, {
-      method: body !== undefined ? "POST" : "GET",
+      method: "POST",
       headers: authHeaders(),
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
@@ -1723,11 +2012,12 @@ function SecurityTab({ user, onSecurityUpdated }: { user: SecurityUser; onSecuri
       "gen-pak-otp":  "/pak/request-otp",
       "chg-login-otp": "/change-login-password/request-otp",
       "chg-txn-otp":  "/change-txn-password/request-otp",
+      "del-acct-otp": "/delete-account/request-otp",
     };
     const path = pathMap[view];
     if (!path) return;
-    // For PAK change flows, re-send needs the PAK
-    if (view === "chg-login-otp" || view === "chg-txn-otp") {
+    // For PAK-gated flows, re-send needs the PAK
+    if (view === "chg-login-otp" || view === "chg-txn-otp" || view === "del-acct-otp") {
       await api(path, { pak });
     } else {
       await api(path);
@@ -1766,7 +2056,10 @@ function SecurityTab({ user, onSecurityUpdated }: { user: SecurityUser; onSecuri
   // ── Change login password ────────────────────────────────────────────────
 
   const requestChangeLoginOtp = () => run(async () => {
-    if (!pak.trim()) { setError("Please enter your PAK"); return; }
+    if (!pak.trim())    { setError("Please enter your PAK"); return; }
+    if (pwd.length < 8) { setError("New password must be at least 8 characters"); return; }
+    if (!pwd2)          { setError("Please confirm your new password"); return; }
+    if (pwd !== pwd2)   { setError("Passwords do not match — please re-enter both fields"); return; }
     await api("/change-login-password/request-otp", { pak: pak.trim() });
     setView("chg-login-otp");
   });
@@ -1783,7 +2076,10 @@ function SecurityTab({ user, onSecurityUpdated }: { user: SecurityUser; onSecuri
   // ── Change transaction password ──────────────────────────────────────────
 
   const requestChangeTxnOtp = () => run(async () => {
-    if (!pak.trim()) { setError("Please enter your PAK"); return; }
+    if (!pak.trim())    { setError("Please enter your PAK"); return; }
+    if (pwd.length < 6) { setError("Transaction password must be at least 6 characters"); return; }
+    if (!pwd2)          { setError("Please confirm your new password"); return; }
+    if (pwd !== pwd2)   { setError("Passwords do not match — please re-enter both fields"); return; }
     await api("/change-txn-password/request-otp", { pak: pak.trim() });
     setView("chg-txn-otp");
   });
@@ -1795,6 +2091,22 @@ function SecurityTab({ user, onSecurityUpdated }: { user: SecurityUser; onSecuri
     setSuccess("Transaction password changed successfully.");
     onSecurityUpdated();
     reset(); setView("overview");
+  });
+
+  // ── Delete account ───────────────────────────────────────────────────────
+
+  const requestDeleteOtp = () => run(async () => {
+    if (!pak.trim()) { setError("Please enter your PAK"); return; }
+    await api("/delete-account/request-otp", { pak: pak.trim() });
+    setView("del-acct-otp");
+  });
+
+  const confirmDeleteAccount = () => run(async () => {
+    await api("/delete-account/confirm", { pak: pak.trim(), otp });
+    // Account deleted — clear local auth state and redirect to landing page
+    localStorage.removeItem("token");
+    sessionStorage.clear();
+    window.location.replace("/");
   });
 
   // ── Render ───────────────────────────────────────────────────────────────
@@ -1845,6 +2157,15 @@ function SecurityTab({ user, onSecurityUpdated }: { user: SecurityUser; onSecuri
       {/* ── OVERVIEW ── */}
       {view === "overview" && (
         <motion.div variants={staggerContainer(0.06)} className="space-y-4">
+
+          {/* Error display */}
+          {error && (
+            <motion.div variants={fadeUp} className="flex items-start gap-2 px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm">
+              <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+              <span className="flex-1">{error}</span>
+              <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600"><X className="w-3.5 h-3.5" /></button>
+            </motion.div>
+          )}
 
           {/* Transaction Password card */}
           <motion.div variants={fadeUp} className="p-5 rounded-2xl border border-border bg-white space-y-4">
@@ -1968,6 +2289,26 @@ function SecurityTab({ user, onSecurityUpdated }: { user: SecurityUser; onSecuri
               <span>Generate your PAK first. It is needed to change your login or transaction password in the future.</span>
             </motion.div>
           )}
+
+          {/* Delete Account card */}
+          <motion.div variants={fadeUp} className="p-5 rounded-2xl border-2 border-red-200 bg-red-50">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-red-100 text-red-600 flex items-center justify-center">
+                  <Trash2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <p className="font-semibold text-red-700 text-sm">Delete Account</p>
+                  <p className="text-xs text-red-500 mt-0.5">Permanently removes all your data — irreversible</p>
+                </div>
+              </div>
+              <button onClick={() => { reset(); setView("del-acct-pak"); }} disabled={!user.hasPak}
+                title={!user.hasPak ? "Generate a PAK first to delete your account" : undefined}
+                className="px-3 py-1.5 rounded-lg bg-red-600 text-white text-xs font-semibold flex items-center gap-1.5 hover:bg-red-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                <Trash2 className="w-3 h-3" /> Delete
+              </button>
+            </div>
+          </motion.div>
         </motion.div>
       )}
 
@@ -2086,9 +2427,18 @@ function SecurityTab({ user, onSecurityUpdated }: { user: SecurityUser; onSecuri
               className="w-full px-4 py-2.5 rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 outline-none text-sm font-mono" />
           </div>
           <PasswordInput label="New Login Password (min 8 chars)" value={pwd} onChange={setPwd} disabled={isLoading} />
-          <PasswordInput label="Confirm New Password" value={pwd2} onChange={setPwd2} disabled={isLoading} />
+          <div>
+            <PasswordInput label="Confirm New Password" value={pwd2} onChange={setPwd2} disabled={isLoading} />
+            {pwd2.length > 0 && (
+              <p className={cn("text-xs mt-1.5 flex items-center gap-1.5", pwd === pwd2 ? "text-green-600" : "text-destructive")}>
+                {pwd === pwd2
+                  ? <><CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> Passwords match</>
+                  : <><AlertCircle className="w-3.5 h-3.5 shrink-0" /> Passwords do not match</>}
+              </p>
+            )}
+          </div>
           <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
-            onClick={requestChangeLoginOtp} disabled={isLoading || !pak.trim()}
+            onClick={requestChangeLoginOtp} disabled={isLoading || !pak.trim() || (pwd2.length > 0 && pwd !== pwd2)}
             className="w-full bg-primary text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-primary/25 transition-shadow disabled:opacity-70 text-sm">
             {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
             {isLoading ? "Verifying PAK…" : "Continue"}
@@ -2125,9 +2475,18 @@ function SecurityTab({ user, onSecurityUpdated }: { user: SecurityUser; onSecuri
               className="w-full px-4 py-2.5 rounded-xl bg-white border-2 border-border focus:border-primary focus:ring-4 focus:ring-primary/10 outline-none text-sm font-mono" />
           </div>
           <PasswordInput label="New Transaction Password (min 6 chars)" value={pwd} onChange={setPwd} disabled={isLoading} />
-          <PasswordInput label="Confirm New Password" value={pwd2} onChange={setPwd2} disabled={isLoading} />
+          <div>
+            <PasswordInput label="Confirm New Password" value={pwd2} onChange={setPwd2} disabled={isLoading} />
+            {pwd2.length > 0 && (
+              <p className={cn("text-xs mt-1.5 flex items-center gap-1.5", pwd === pwd2 ? "text-green-600" : "text-destructive")}>
+                {pwd === pwd2
+                  ? <><CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> Passwords match</>
+                  : <><AlertCircle className="w-3.5 h-3.5 shrink-0" /> Passwords do not match</>}
+              </p>
+            )}
+          </div>
           <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
-            onClick={requestChangeTxnOtp} disabled={isLoading || !pak.trim()}
+            onClick={requestChangeTxnOtp} disabled={isLoading || !pak.trim() || (pwd2.length > 0 && pwd !== pwd2)}
             className="w-full bg-primary text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-primary/25 transition-shadow disabled:opacity-70 text-sm">
             {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
             {isLoading ? "Verifying PAK…" : "Continue"}
@@ -2145,6 +2504,58 @@ function SecurityTab({ user, onSecurityUpdated }: { user: SecurityUser; onSecuri
             onResend={resendOtp}
             onSubmit={confirmChangeTxn}
             isLoading={isLoading} error={error}
+          />
+        </motion.div>
+      )}
+
+      {/* ── DELETE ACCOUNT — PAK entry ── */}
+      {view === "del-acct-pak" && (
+        <motion.div variants={fadeUp} className="space-y-4">
+          {panelHeader("Delete Account", "Step 1 of 2 — authorize with your PAK")}
+          <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>
+              <strong>This action is permanent and cannot be undone.</strong> All your data — balance, transaction history, wallets, and settings — will be erased forever.
+            </span>
+          </div>
+          {error && <InlineError message={error} />}
+          <div>
+            <label className="block text-sm font-medium text-foreground mb-1.5">
+              <KeyRound className="w-4 h-4 inline mr-1.5 opacity-60" />
+              Personal Authorization Key (PAK)
+            </label>
+            <input value={pak} onChange={(e) => setPak(e.target.value)}
+              placeholder="Your 40-character PAK"
+              className="w-full px-4 py-2.5 rounded-xl bg-white border-2 border-red-300 focus:border-red-500 focus:ring-4 focus:ring-red-100 outline-none text-sm font-mono" />
+            <p className="text-xs text-muted-foreground mt-1.5">
+              Your PAK is required to prove this request came from you — not from an admin or anyone with database access.
+            </p>
+          </div>
+          <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
+            onClick={requestDeleteOtp} disabled={isLoading || !pak.trim()}
+            className="w-full bg-red-600 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 hover:bg-red-700 transition-colors disabled:opacity-70 text-sm">
+            {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
+            {isLoading ? "Verifying PAK…" : "Continue to confirmation"}
+          </motion.button>
+        </motion.div>
+      )}
+
+      {/* ── DELETE ACCOUNT — OTP step ── */}
+      {view === "del-acct-otp" && (
+        <motion.div variants={fadeUp} className="space-y-4">
+          {panelHeader("Delete Account", "Step 2 of 2 — confirm via email")}
+          <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>Enter the code sent to your email to <strong>permanently delete</strong> your account. This cannot be reversed.</span>
+          </div>
+          <OtpStep
+            label="A verification code was sent to your email. Enter it below to confirm account deletion."
+            otp={otp} setOtp={setOtp}
+            onResend={resendOtp}
+            onSubmit={confirmDeleteAccount}
+            isLoading={isLoading} error={error}
+            submitLabel="Delete My Account"
+            submitClassName="bg-red-600 hover:bg-red-700 text-white"
           />
         </motion.div>
       )}
@@ -2166,7 +2577,7 @@ function CryptoDepositPanel({ walletAddress }: { walletAddress?: string }) {
     >
       <motion.div variants={fadeUp} className="flex items-start gap-3 px-4 py-3 rounded-xl bg-violet-50 border border-violet-200 text-violet-700 text-sm">
         <QrCode className="w-4 h-4 shrink-0 mt-0.5" />
-        <span>Send <strong>USDC</strong> on the <strong>Polygon (Amoy)</strong> network to your deposit address below. Your balance will be credited automatically.</span>
+        <span>Send <strong>USDC</strong> to your deposit address below from any supported testnet — <strong>Base Sepolia</strong>, <strong>Polygon Amoy</strong>, or <strong>Ethereum Sepolia</strong>. Your balance is credited automatically within seconds.</span>
       </motion.div>
 
       {address ? (
@@ -2177,7 +2588,7 @@ function CryptoDepositPanel({ walletAddress }: { walletAddress?: string }) {
               <code className="flex-1 text-xs font-mono break-all text-foreground">{address}</code>
               <CopyButton text={address} />
             </div>
-            <p className="text-xs text-muted-foreground">Only send USDC on Polygon. Sending other tokens or using a different network may result in permanent loss.</p>
+            <p className="text-xs text-muted-foreground">Only send USDC on supported networks. Sending other tokens or using a different network may result in permanent loss.</p>
           </motion.div>
 
           <motion.div variants={fadeUp} className="flex items-start gap-3 px-4 py-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 text-xs">

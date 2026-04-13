@@ -14,7 +14,7 @@ function getTransporter() {
     secure: port === 465,
     auth: { user, pass },
     family: 4, // force IPv4 — WSL2 cannot reach IPv6 SMTP servers
-  });
+  } as Parameters<typeof nodemailer.createTransport>[0]);
 }
 
 const FROM = process.env.SMTP_FROM ?? "USDC Send <no-reply@usdcsend.app>";
@@ -299,6 +299,7 @@ const SECURITY_ACTION_LABELS: Record<string, { subject: string; heading: string;
   "pak-gen":     { subject: "Generate your Personal Authorization Key", heading: "Generate PAK",          desc: "to generate your Personal Authorization Key (PAK)" },
   "chg-login":   { subject: "Change your sign-in password",          heading: "Change sign-in password",  desc: "to change your sign-in password" },
   "chg-txn-pwd": { subject: "Change your transaction password",      heading: "Change transaction password", desc: "to change your transaction password" },
+  "del-account": { subject: "Confirm account deletion — USDC Send",  heading: "Delete your account",         desc: "to permanently delete your account" },
 };
 
 export async function sendSecurityOtpEmail(to: string, code: string, actionType: string): Promise<void> {
@@ -369,16 +370,17 @@ export async function sendSecurityOtpEmail(to: string, code: string, actionType:
 </body>
 </html>`;
 
+  // Always log the OTP to server console as a fallback (visible in server logs)
+  console.log(`\n──────────────────────────────────────────────`);
+  console.log(`  SECURITY OTP for ${to}  [${actionType}]`);
+  console.log(`  Code: ${code}  (expires in 10 minutes)`);
+  console.log(`──────────────────────────────────────────────\n`);
+
   const transporter = getTransporter();
+  if (!transporter) return;
 
-  if (!transporter) {
-    console.log(`\n──────────────────────────────────────────────`);
-    console.log(`  SECURITY OTP for ${to}  [${actionType}]`);
-    console.log(`  Code: ${code}  (expires in 10 minutes)`);
-    console.log(`  (Configure SMTP_HOST/SMTP_USER/SMTP_PASS to send real emails)`);
-    console.log(`──────────────────────────────────────────────\n`);
-    return;
-  }
-
-  await transporter.sendMail({ from: FROM, to, subject: meta.subject, html });
+  // Fire-and-forget: don't let email failure block the OTP response
+  transporter.sendMail({ from: FROM, to, subject: meta.subject, html }).catch((err: any) => {
+    console.error(`[security-otp-email] Failed to send to ${to}: ${err?.message}`);
+  });
 }

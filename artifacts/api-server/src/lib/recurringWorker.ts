@@ -34,21 +34,17 @@ export async function processRecurringTransfers() {
       const numAmount = parseFloat(recurring.amount);
       const currentBalance = parseFloat(user.claimedBalance ?? "0");
 
+      const advanceNext = (dt: Date): void => {
+        if (recurring.interval === "hourly")       dt.setHours(dt.getHours() + 1);
+        else if (recurring.interval === "daily")   dt.setDate(dt.getDate() + 1);
+        else if (recurring.interval === "weekly")  dt.setDate(dt.getDate() + 7);
+        else if (recurring.interval === "monthly") dt.setMonth(dt.getMonth() + 1);
+      };
+
       let nextRunAt = new Date(recurring.nextRunAt);
-      if (recurring.interval === "daily") {
-        nextRunAt.setDate(nextRunAt.getDate() + 1);
-      } else if (recurring.interval === "weekly") {
-        nextRunAt.setDate(nextRunAt.getDate() + 7);
-      } else if (recurring.interval === "monthly") {
-        nextRunAt.setMonth(nextRunAt.getMonth() + 1);
-      }
-      
-      // If it's been skipped for days, catch it up to the future
-      while (nextRunAt <= new Date()) {
-         if (recurring.interval === "daily") nextRunAt.setDate(nextRunAt.getDate() + 1);
-         else if (recurring.interval === "weekly") nextRunAt.setDate(nextRunAt.getDate() + 7);
-         else if (recurring.interval === "monthly") nextRunAt.setMonth(nextRunAt.getMonth() + 1);
-      }
+      advanceNext(nextRunAt);
+      // Catch up if worker was down
+      while (nextRunAt <= new Date()) advanceNext(nextRunAt);
 
       if (currentBalance < numAmount) {
         // Insufficient balance, skip this interval

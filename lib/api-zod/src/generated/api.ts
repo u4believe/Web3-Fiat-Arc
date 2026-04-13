@@ -67,29 +67,6 @@ export const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 export const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
 export const POSITIVE_DECIMAL = /^(?!0\d)\d+(\.\d+)?$/;
 
-export const SendUSDCBody = zod.object({
-  recipientEmail: zod.string().email().transform((v) => v.toLowerCase().trim()),
-  amount: zod
-    .string()
-    .regex(POSITIVE_DECIMAL, "Amount must be a positive number")
-    .describe("Amount in USDC (as string to preserve precision)"),
-  senderAddress: zod
-    .string()
-    .regex(EVM_ADDRESS, "senderAddress must be a valid EVM address (0x + 40 hex chars)")
-    .describe("Sender's wallet address"),
-});
-
-export const SendUSDCResponse = zod.object({
-  escrowId: zod.number(),
-  contractAddress: zod.string(),
-  usdcAddress: zod.string(),
-  emailHash: zod.string().describe("Keccak256 hash of the recipient email"),
-  amount: zod.string().describe("Amount in USDC"),
-  amountWei: zod
-    .string()
-    .describe("Amount in wei (smallest USDC unit with 6 decimals)"),
-  message: zod.string(),
-});
 
 /**
  * Returns all unclaimed escrow deposits for the authenticated user's email
@@ -113,23 +90,9 @@ export const GetPendingEscrowsResponse = zod.object({
     .describe("Total pending amount in USDC\/USD"),
 });
 
-/**
- * Claim all pending escrow deposits for the authenticated user
- * @summary Claim escrow funds
- */
-export const ClaimEscrowBody = zod.object({
-  recipientWalletAddress: zod
-    .string()
-    .optional()
-    .describe(
-      "Wallet address to receive the USDC (optional, claim to app balance if not provided)",
-    ),
-});
-
 export const ClaimEscrowResponse = zod.object({
   claimedCount: zod.number(),
-  totalClaimed: zod.string().describe("Total amount claimed in USDC"),
-  txHashes: zod.array(zod.string()),
+  totalClaimed: zod.string().describe("Total amount claimed in USD"),
   message: zod.string(),
 });
 
@@ -221,44 +184,6 @@ export const WithdrawFiatResponse = zod.object({
   estimatedArrival: zod.string().optional(),
 });
 
-// ─── Security-hardened schemas (not auto-generated) ───────────────────────────
-
-/**
- * Confirm that a send transaction has been mined on-chain.
- * @summary Confirm escrow deposit tx
- */
-export const SendConfirmBody = zod.object({
-  escrowId: zod.number().int().positive("escrowId must be a positive integer"),
-  txHash: zod
-    .string()
-    .regex(TX_HASH, "txHash must be a valid 0x-prefixed 32-byte hex string"),
-});
-
-/**
- * Request a backend-signed authorization to claim escrow funds.
- * Returns a one-time nonce embedded in the signature.
- * @summary Sign claim request
- */
-export const ClaimSignBody = zod.object({
-  walletAddress: zod
-    .string()
-    .regex(EVM_ADDRESS, "walletAddress must be a valid EVM address (0x + 40 hex chars)"),
-});
-
-/**
- * Confirm an on-chain claim transaction, consuming the nonce.
- * @summary Confirm claim tx
- */
-export const ClaimConfirmBody = zod.object({
-  txHash: zod
-    .string()
-    .regex(TX_HASH, "txHash must be a valid 0x-prefixed 32-byte hex string"),
-  nonce: zod.string().min(1, "nonce is required"),
-  walletAddress: zod
-    .string()
-    .regex(EVM_ADDRESS, "walletAddress must be a valid EVM address (0x + 40 hex chars)")
-    .optional(),
-});
 
 /**
  * Fiat withdraw — extra validation on bank fields.
@@ -282,8 +207,11 @@ export const WithdrawFiatBodySecure = WithdrawFiatBody.extend({
 export const CreateRecurringBody = zod.object({
   recipientEmail: zod.string().email().transform((v) => v.toLowerCase().trim()),
   amount: zod.string().regex(POSITIVE_DECIMAL, "Amount must be a positive number"),
-  interval: zod.enum(["daily", "weekly", "monthly"]),
+  interval: zod.enum(["hourly", "daily", "weekly", "monthly"]),
   endDate: zod.string().optional().describe("ISO date string for when the recurring transfer should end"),
+  startHour: zod.number().int().min(0).max(23).optional().describe("Hour of day (0-23) for daily/weekly/monthly schedules"),
+  startDayOfWeek: zod.number().int().min(0).max(6).optional().describe("Day of week (0=Sun…6=Sat) for weekly schedules"),
+  startDayOfMonth: zod.number().int().min(1).max(31).optional().describe("Day of month (1-31) for monthly schedules"),
 });
 
 export const CancelRecurringBody = zod.object({

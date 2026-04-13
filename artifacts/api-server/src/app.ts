@@ -2,8 +2,12 @@ import express, { type Express, type Request, type Response, type NextFunction }
 import cors from "cors";
 import helmet from "helmet";
 import pinoHttp from "pino-http";
+import path from "path";
+import { fileURLToPath } from "url";
 import router from "./routes";
 import { logger } from "./lib/logger";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app: Express = express();
 
@@ -25,7 +29,7 @@ app.use(
 );
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
-// In production, only allow the same Replit domain; in dev allow all.
+// In production set ALLOWED_ORIGINS env var; in dev (unset) allow all.
 const allowedOrigins: string[] = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim())
   : [];
@@ -79,6 +83,15 @@ app.use(express.urlencoded({ extended: true, limit: "64kb" }));
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.use("/api", router);
+
+// ─── Serve frontend static files ─────────────────────────────────────────────
+// Serves the built usdc-send app. All non-API routes fall through to index.html
+// so that client-side routing works.
+const frontendDist = path.resolve(__dirname, "../../usdc-send/dist/public");
+app.use(express.static(frontendDist));
+app.get("/{*path}", (_req: Request, res: Response) => {
+  res.sendFile(path.join(frontendDist, "index.html"));
+});
 
 // ─── Global error handler ─────────────────────────────────────────────────────
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {

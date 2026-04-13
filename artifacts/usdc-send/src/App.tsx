@@ -12,7 +12,15 @@ import NotFound from "./pages/not-found";
 // Wire up the auth token so every generated API hook includes Authorization: Bearer
 setAuthTokenGetter(() => localStorage.getItem("token"));
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 0,              // always re-fetch on mount — no stale cache
+      refetchOnWindowFocus: true,
+      retry: 1,
+    },
+  },
+});
 
 // Show sidebar app for logged-in users, marketing page for guests — both at "/"
 function HomeRoute() {
@@ -24,6 +32,8 @@ function Router() {
   return (
     <Switch>
       <Route path="/" component={HomeRoute} />
+      <Route path="/landing" component={Landing} />
+      <Route path="/dashboard" component={Dashboard} />
       <Route path="/login" component={Login} />
       <Route path="/register" component={Register} />
       <Route component={NotFound} />

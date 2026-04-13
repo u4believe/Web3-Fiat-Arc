@@ -135,13 +135,14 @@ export default function Login() {
 
           {/* Logo */}
           <div className="flex justify-center mb-8">
-            <motion.div
-              animate={{ y: [0, -6, 0] }}
-              transition={{ repeat: Infinity, duration: 4, ease: "easeInOut" }}
-              className="w-14 h-14 rounded-2xl bg-gradient-to-br from-primary to-accent flex items-center justify-center text-white shadow-xl shadow-primary/25"
-            >
-              <Send className="w-7 h-7" />
-            </motion.div>
+            <Link href="/landing">
+              <motion.div
+                animate={{ y: [0, -4, 0] }}
+                transition={{ repeat: Infinity, duration: 4, ease: "easeInOut" }}
+              >
+                <img src="/EPEE4721.JPG" alt="SEND" className="h-10 w-auto cursor-pointer" />
+              </motion.div>
+            </Link>
           </div>
 
           {/* Step panels — no AnimatePresence to avoid blank-screen transition bug */}
