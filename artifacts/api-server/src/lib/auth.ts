@@ -47,3 +47,34 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     res.status(401).json({ error: "Unauthorized", message: "Invalid or expired token" });
   }
 }
+
+/**
+ * Middleware: ensures the authenticated user has verified their email.
+ * Must be used AFTER requireAuth.
+ */
+export async function requireEmailVerified(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const userId = (req as any).user?.userId;
+  if (!userId) {
+    res.status(401).json({ error: "Unauthorized", message: "Not authenticated" });
+    return;
+  }
+  try {
+    const { db, usersTable } = await import("@workspace/db");
+    const { eq } = await import("drizzle-orm");
+    const [user] = await db.select({ emailVerified: (usersTable as any).emailVerified })
+      .from(usersTable)
+      .where(eq(usersTable.id, userId))
+      .limit(1);
+    if (!user?.emailVerified) {
+      res.status(403).json({
+        error: "Email not verified",
+        message: "Please verify your email address before performing this action.",
+        code: "EMAIL_NOT_VERIFIED",
+      });
+      return;
+    }
+    next();
+  } catch (err) {
+    next(err);
+  }
+}

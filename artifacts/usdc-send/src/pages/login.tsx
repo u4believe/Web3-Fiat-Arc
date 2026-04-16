@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Link } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
-import { Mail, Lock, ArrowRight, Loader2, Send, ShieldCheck, RefreshCw, Info } from "lucide-react";
+import { Mail, Lock, ArrowRight, Loader2, Send, ShieldCheck, RefreshCw, Info, CheckCircle2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { AppLayout } from "@/components/layout";
@@ -19,6 +19,9 @@ export default function Login() {
   const [sentEmail, setSentEmail] = useState("");
   const [isPending, setIsPending] = useState(false);
   const [error, setError]         = useState("");
+
+  const searchParams = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
+  const verifiedParam = searchParams.get("verified");
 
   const [email,    setEmail]    = useState("");
   const [password, setPassword] = useState("");
@@ -153,6 +156,13 @@ export default function Login() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.25 }}
             >
+              {verifiedParam === "true" && (
+                <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}
+                  className="mb-6 flex items-start gap-3 px-4 py-3 rounded-xl bg-green-50 border border-green-200 text-green-700 text-sm font-medium">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>Email verified! You can now sign in.</span>
+                </motion.div>
+              )}
               <div className="text-center mb-8">
                 <h1 className="text-3xl font-display font-bold">Welcome back</h1>
                 <p className="text-muted-foreground mt-2">Log in to claim and manage your USD.</p>

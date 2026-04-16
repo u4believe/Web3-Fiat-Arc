@@ -26,9 +26,10 @@
 import { Router, type IRouter } from "express";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
-import { db, usersTable, otpCodesTable } from "@workspace/db";
+import { db, usersTable, otpCodesTable, escrowsTable, escrowBalancesTable, chainTransactionsTable } from "@workspace/db";
+import { hashEmail } from "../lib/escrow.js";
 import { eq, and, gt, sql } from "drizzle-orm";
-import { requireAuth } from "../lib/auth.js";
+import { requireAuth, requireEmailVerified } from "../lib/auth.js";
 import { sendSecurityOtpEmail } from "../lib/email.js";
 import { logger } from "../lib/logger.js";
 
@@ -141,7 +142,7 @@ router.post("/txn-password/request-otp", requireAuth, async (req, res) => {
 
 // ── POST /api/security/txn-password/set ──────────────────────────────────────
 
-router.post("/txn-password/set", requireAuth, async (req, res) => {
+router.post("/txn-password/set", requireAuth, requireEmailVerified, async (req, res) => {
   try {
     const { userId } = (req as any).user;
     const { otp, password } = req.body as { otp?: unknown; password?: unknown };
@@ -206,7 +207,7 @@ router.post("/pak/request-otp", requireAuth, async (req, res) => {
 // Returns the full PAK plaintext exactly once. After pakCopiedAt is set the
 // full key is permanently irretrievable — not even the server can recover it.
 
-router.post("/pak/generate", requireAuth, async (req, res) => {
+router.post("/pak/generate", requireAuth, requireEmailVerified, async (req, res) => {
   try {
     const { userId } = (req as any).user;
     const { otp } = req.body as { otp?: unknown };
@@ -491,17 +492,24 @@ router.post("/delete-account/confirm", requireAuth, async (req, res) => {
       return;
     }
 
-    // Hard-delete all user data in dependency order.
-    // escrows: sender is identified by wallet address, not userId — we only null
-    // the recipient link so the sender's on-chain record is preserved for auditing.
-    await db.execute(sql`DELETE FROM otp_codes           WHERE user_id        = ${userId}`);
-    await db.execute(sql`DELETE FROM withdrawals          WHERE user_id        = ${userId}`);
-    await db.execute(sql`DELETE FROM deposits             WHERE user_id        = ${userId}`);
-    await db.execute(sql`DELETE FROM virtual_accounts     WHERE user_id        = ${userId}`);
-    await db.execute(sql`DELETE FROM claim_nonces         WHERE user_id        = ${userId}`);
-    await db.execute(sql`DELETE FROM recurring_transfers  WHERE sender_user_id = ${userId}`);
-    await db.execute(sql`UPDATE escrows SET recipient_user_id = NULL WHERE recipient_user_id = ${userId}`);
-    await db.execute(sql`DELETE FROM users                WHERE id             = ${userId}`);
+    // Hard-delete ALL user data across every table in dependency order.
+    const emailHash = hashEmail(user.email);
+
+    await db.execute(sql`DELETE FROM otp_codes            WHERE user_id        = ${userId}`);
+    await db.execute(sql`DELETE FROM claim_nonces          WHERE user_id        = ${userId}`);
+    await db.execute(sql`DELETE FROM recurring_transfers   WHERE sender_user_id = ${userId}`);
+    await db.execute(sql`DELETE FROM withdrawals           WHERE user_id        = ${userId}`);
+    await db.execute(sql`DELETE FROM deposits              WHERE user_id        = ${userId}`);
+    await db.execute(sql`DELETE FROM virtual_accounts      WHERE user_id        = ${userId}`);
+    // Escrows: delete rows where the user was either sender or recipient
+    await db.execute(sql`DELETE FROM escrows WHERE sender_address = ${user.email}`);
+    await db.execute(sql`DELETE FROM escrows WHERE email_hash     = ${emailHash}`);
+    await db.execute(sql`DELETE FROM escrows WHERE recipient_user_id = ${userId}`);
+    // Escrow on-chain balance record keyed by email hash
+    await db.execute(sql`DELETE FROM escrow_balances       WHERE email_hash     = ${emailHash}`);
+    // On-chain transaction records (escrow deposits/claims) keyed by email hash
+    await db.execute(sql`DELETE FROM chain_transactions    WHERE email_hash     = ${emailHash}`);
+    await db.execute(sql`DELETE FROM users                 WHERE id             = ${userId}`);
 
     logger.info({ userId }, "[security/delete-account] Account permanently deleted");
     res.json({ success: true, message: "Your account has been permanently deleted." });

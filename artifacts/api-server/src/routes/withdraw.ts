@@ -2,16 +2,75 @@ import { Router, type IRouter } from "express";
 import { db, usersTable, withdrawalsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import bcrypt from "bcrypt";
-import { requireAuth } from "../lib/auth.js";
+import { ethers } from "ethers";
+import { requireAuth, requireEmailVerified } from "../lib/auth.js";
 import {
   circleTransferUsdc,
-  getWalletUsdcBalance,
   getPlatformWalletAddress,
+  getPlatformWalletIdForChain,
   initiateWireTransfer,
   PRIMARY_BLOCKCHAIN,
   PRIMARY_USDC_ADDRESS,
+  SUPPORTED_BLOCKCHAINS,
+  type SupportedBlockchain,
 } from "../lib/circle.js";
 import { WithdrawCryptoBody, WithdrawFiatBodySecure } from "@workspace/api-zod";
+
+// ─── Multi-chain treasury balance lookup ─────────────────────────────────────
+// CCTP cross-chain bridging is not functional on these testnet deployments, so
+// withdrawals fall through to the first chain treasury that has enough USDC.
+// Order: PRIMARY_BLOCKCHAIN first, then remaining chains.
+
+const CHAIN_RPC_URLS: Record<string, string> = {
+  "ETH-SEPOLIA":  process.env.ETH_SEPOLIA_RPC_URL  ?? "https://ethereum-sepolia-rpc.publicnode.com",
+  "BASE-SEPOLIA": process.env.BASE_SEPOLIA_RPC_URL  ?? "https://sepolia.base.org",
+  "MATIC-AMOY":   process.env.POLYGON_AMOY_RPC_URL  ?? "https://rpc-amoy.polygon.technology/",
+};
+
+const CHAIN_USDC_ADDRESSES: Record<string, string> = {
+  "ETH-SEPOLIA":  (process.env.ETH_SEPOLIA_USDC_ADDRESS  ?? "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238").toLowerCase(),
+  "BASE-SEPOLIA": (process.env.BASE_USDC_ADDRESS          ?? "0x036CbD53842c5426634e7929541eC2318f3dCF7e").toLowerCase(),
+  "MATIC-AMOY":   (process.env.POLYGON_AMOY_USDC_ADDRESS  ?? "0x41e94eb019c0762f9bfcf9fb1e58725bfb0e7582").toLowerCase(),
+};
+
+const ERC20_BALANCE_ABI = ["function balanceOf(address) view returns (uint256)"];
+
+async function getOnChainBalance(chain: string, address: string): Promise<number> {
+  try {
+    const provider = new ethers.JsonRpcProvider(CHAIN_RPC_URLS[chain]);
+    const contract = new ethers.Contract(CHAIN_USDC_ADDRESSES[chain], ERC20_BALANCE_ABI, provider);
+    const raw: bigint = await contract.balanceOf(address);
+    return parseFloat(ethers.formatUnits(raw, 6));
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Find the first chain treasury with enough USDC to cover the withdrawal amount.
+ * PRIMARY_BLOCKCHAIN is checked first. Returns null if no chain has enough.
+ */
+async function findSourceChain(amount: number): Promise<SupportedBlockchain | null> {
+  const platformAddress = getPlatformWalletAddress();
+  if (!platformAddress) return null;
+
+  // Check primary chain first, then all others
+  const orderedChains: SupportedBlockchain[] = [
+    PRIMARY_BLOCKCHAIN,
+    ...SUPPORTED_BLOCKCHAINS.filter((c) => c !== PRIMARY_BLOCKCHAIN),
+  ];
+
+  for (const chain of orderedChains) {
+    // Skip chains where the platform wallet ID isn't configured — can't send without it
+    if (!getPlatformWalletIdForChain(chain)) continue;
+
+    const balance = await getOnChainBalance(chain, platformAddress);
+    if (balance >= amount) {
+      return chain;
+    }
+  }
+  return null;
+}
 
 const router: IRouter = Router();
 
@@ -25,7 +84,7 @@ async function loadUserBalance(userId: number) {
 }
 
 // ─── POST /api/withdraw/crypto ────────────────────────────────────────────────
-router.post("/crypto", requireAuth, async (req, res) => {
+router.post("/crypto", requireAuth, requireEmailVerified, async (req, res) => {
   try {
     const user = (req as any).user;
     const parsed = WithdrawCryptoBody.safeParse(req.body);
@@ -67,56 +126,28 @@ router.post("/crypto", requireAuth, async (req, res) => {
       return;
     }
 
-    // Decide source wallet:
-    //   • Real Circle DCW wallet (non platform-* ID):
-    //       Check live Circle wallet balance first. If it covers the withdrawal,
-    //       send from the user's own wallet (direct on-chain deposits).
-    //       If the Circle wallet is short (e.g. balance came from Paystack/P2P which
-    //       lands in the treasury, not the user's DCW wallet), fall back to treasury.
-    //   • HD fallback wallet (platform-* ID):
-    //       Always send from platform treasury (sweep worker moves HD USDC there).
-    const hasRealCircleWallet =
-      dbUser?.circleWalletAddress &&
-      dbUser?.circleWalletId &&
-      !dbUser.circleWalletId.startsWith("platform-");
-
-    let sourceAddress: string | null = null;
-    let sourceIsUserWallet = false;
-
-    if (hasRealCircleWallet) {
-      // Resolve the PRIMARY_BLOCKCHAIN wallet ID and check its live balance
-      let dcwWalletId: string | null = null;
-      const walletIdsJson = (dbUser as any).circleWalletIdsJson;
-      if (walletIdsJson) {
-        try {
-          const idsMap = JSON.parse(walletIdsJson) as Record<string, string>;
-          dcwWalletId = idsMap[PRIMARY_BLOCKCHAIN] ?? dbUser!.circleWalletId ?? null;
-        } catch { dcwWalletId = dbUser!.circleWalletId ?? null; }
-      } else {
-        dcwWalletId = dbUser!.circleWalletId ?? null;
-      }
-
-      const circleWalletBalance = dcwWalletId
-        ? parseFloat(await getWalletUsdcBalance(dcwWalletId))
-        : 0;
-
-      if (circleWalletBalance >= withdrawAmount) {
-        sourceAddress = dbUser!.circleWalletAddress!;
-        sourceIsUserWallet = true;
-        req.log.info({ userId: user.userId, circleWalletBalance, withdrawAmount }, "[withdraw] Sending from user Circle wallet");
-      } else {
-        // Funds are in the treasury (Paystack/P2P credits) — fall back to it
-        sourceAddress = getPlatformWalletAddress();
-        req.log.info({ userId: user.userId, circleWalletBalance, withdrawAmount }, "[withdraw] Circle wallet insufficient — falling back to treasury");
-      }
-    } else {
-      sourceAddress = getPlatformWalletAddress();
-    }
-
-    if (!sourceAddress) {
-      res.status(503).json({ error: "Not configured", message: "No source wallet available for withdrawal" });
+    // ── Resolve source wallet ────────────────────────────────────────────────
+    // Gas Station is NOT active — only the platform treasury wallet has ETH to
+    // pay gas fees. User wallets hold deposited USDC but cannot pay gas.
+    // The treasury is funded by the sweep worker (user USDC swept → treasury).
+    const platformAddress = getPlatformWalletAddress();
+    if (!platformAddress) {
+      res.status(503).json({ error: "Not configured", message: "Platform treasury wallet is not configured." });
       return;
     }
+
+    const sourceChain = await findSourceChain(withdrawAmount);
+    if (!sourceChain) {
+      res.status(400).json({
+        error: "Insufficient treasury balance",
+        message: `Platform treasury does not have enough USDC to cover $${withdrawAmount.toFixed(2)}. Please try a smaller amount or contact support.`,
+      });
+      return;
+    }
+
+    const sourceAddress = platformAddress;
+
+    const usdcAddress = CHAIN_USDC_ADDRESSES[sourceChain] ?? PRIMARY_USDC_ADDRESS;
 
     // Deduct amount + fee optimistically — roll back if transfer fails
     const newBalance = (claimedBalance - totalDeducted).toFixed(6);
@@ -127,40 +158,20 @@ router.post("/crypto", requireAuth, async (req, res) => {
       txHash = await circleTransferUsdc(
         sourceAddress,
         walletAddress,
-        PRIMARY_BLOCKCHAIN,
-        PRIMARY_USDC_ADDRESS,
+        sourceChain,
+        usdcAddress,
         amount,
       );
-      req.log.info({ txHash, amount, walletAddress, blockchain: PRIMARY_BLOCKCHAIN, source: sourceIsUserWallet ? "user-wallet" : "treasury" }, "[withdraw] Circle USDC transfer initiated");
+      req.log.info({ txHash, amount, walletAddress, blockchain: sourceChain, source: "treasury" }, "[withdraw] Circle USDC transfer initiated");
     } catch (chainError: any) {
       await db.update(usersTable).set({ claimedBalance: claimedBalance.toFixed(6) }).where(eq(usersTable.id, user.userId));
-      req.log.error({ err: chainError.message, amount, walletAddress }, "[withdraw] Transfer failed — balance restored");
+      req.log.error({ err: chainError.message, amount, walletAddress, sourceChain }, "[withdraw] Transfer failed — balance restored");
       res.status(502).json({ error: "Transfer failed", message: chainError.message });
       return;
     }
 
-    // Collect the $0.10 fee:
-    //   • Sent from user's own Circle wallet → transfer fee to platform treasury
-    //   • Sent from treasury (HD users or DCW fallback) → fee is already in treasury
-    //     (deducted from claimedBalance but not sent out — no second transfer needed)
-    if (sourceIsUserWallet) {
-      const platformAddress = getPlatformWalletAddress();
-      if (platformAddress) {
-        try {
-          await circleTransferUsdc(
-            sourceAddress,
-            platformAddress,
-            PRIMARY_BLOCKCHAIN,
-            PRIMARY_USDC_ADDRESS,
-            WITHDRAWAL_FEE.toFixed(6),
-          );
-          req.log.info({ userId: user.userId, fee: WITHDRAWAL_FEE }, "[withdraw] Fee collected to treasury");
-        } catch (feeErr: any) {
-          // Non-fatal — main withdrawal already succeeded; log and continue
-          req.log.warn({ err: feeErr.message, userId: user.userId }, "[withdraw] Fee collection failed — manual recovery needed");
-        }
-      }
-    }
+    // The $0.10 fee was already deducted from claimedBalance above.
+    // It stays as platform revenue in the DB — no second on-chain transaction needed.
 
     await db.insert(withdrawalsTable).values({
       userId: user.userId,
@@ -177,8 +188,8 @@ router.post("/crypto", requireAuth, async (req, res) => {
       amount,
       fee: WITHDRAWAL_FEE.toFixed(2),
       newBalance,
-      blockchain: PRIMARY_BLOCKCHAIN,
-      message: `Withdrew ${withdrawAmount.toFixed(2)} USDC to ${walletAddress} on ${PRIMARY_BLOCKCHAIN}`,
+      blockchain: sourceChain,
+      message: `Withdrew ${withdrawAmount.toFixed(2)} USDC to ${walletAddress} on ${sourceChain}`,
     });
   } catch (error: any) {
     req.log.error({ err: error }, "[withdraw] Crypto withdrawal error");
@@ -187,7 +198,7 @@ router.post("/crypto", requireAuth, async (req, res) => {
 });
 
 // ─── POST /api/withdraw/fiat ──────────────────────────────────────────────────
-router.post("/fiat", requireAuth, async (req, res) => {
+router.post("/fiat", requireAuth, requireEmailVerified, async (req, res) => {
   try {
     const user = (req as any).user;
     const parsed = WithdrawFiatBodySecure.safeParse(req.body);

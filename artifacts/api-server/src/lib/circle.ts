@@ -1,5 +1,4 @@
 import axios from "axios";
-import { ethers } from "ethers";
 import { randomUUID } from "node:crypto";
 import { initiateDeveloperControlledWalletsClient } from "@circle-fin/developer-controlled-wallets";
 
@@ -9,51 +8,38 @@ const CIRCLE_ENTITY_SECRET = process.env.CIRCLE_ENTITY_SECRET;
 let   CIRCLE_WALLET_SET_ID = process.env.CIRCLE_WALLET_SET_ID;
 
 // ─── Supported blockchains ────────────────────────────────────────────────────
+// Platform supports BASE-SEPOLIA only.
 
-export const SUPPORTED_BLOCKCHAINS = ["MATIC-AMOY", "ETH-SEPOLIA", "BASE-SEPOLIA"] as const;
+export const SUPPORTED_BLOCKCHAINS = ["BASE-SEPOLIA"] as const;
 export type  SupportedBlockchain   = (typeof SUPPORTED_BLOCKCHAINS)[number];
 
-// Primary chain — the one we send withdrawals on (also used as the default for
-// resolving wallet IDs when no chain is explicitly given).
-export const PRIMARY_BLOCKCHAIN   = (process.env.CIRCLE_PRIMARY_BLOCKCHAIN ?? "BASE-SEPOLIA") as SupportedBlockchain;
-export const PRIMARY_USDC_ADDRESS = process.env.POLYGON_USDC_ADDRESS ?? "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+export const PRIMARY_BLOCKCHAIN   = "BASE-SEPOLIA" as SupportedBlockchain;
+export const PRIMARY_USDC_ADDRESS = process.env.BASE_USDC_ADDRESS ?? "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 
-// Fallback USDC token IDs — confirmed from live wallet balance queries on this entity.
-// These are entity-specific (not global Circle constants) — verified 2026-04-13.
+// Fallback USDC token IDs — entity-specific, confirmed live via getWalletTokenBalance.
 const FALLBACK_USDC_TOKEN_IDS: Record<string, string> = {
   "MATIC-AMOY":   "36b6931a-873a-56a8-8a27-b706b17104ee",
   "ETH-SEPOLIA":  "5797fbd6-3795-519d-84ca-ec4c5f80c3b1",
   "BASE-SEPOLIA": "bdf128b4-827b-5267-8f9e-243694989b5f",
 };
 
+
 // Per-wallet token-ID cache to avoid repeated API calls
 const _tokenIdCache = new Map<string, string>(); // walletId → USDC token ID
 
 // ─── Gas Station ──────────────────────────────────────────────────────────────
-// On TESTNET Circle automatically provisions a default Gas Station policy —
-// no console setup required. Gas is sponsored for all SCA wallets automatically
-// as long as feeLevel is NOT included in createTransaction().
-//
-// On MAINNET you must create and activate a policy in the Circle console first.
-//
-// CIRCLE_GAS_STATION_ENABLED=true bypasses the API probe and forces gas station
-// mode regardless of what the API returns.
+// Gas Station is NOT active on this entity (GET /v1/w3s/config/entity/gasStation → 404).
+// 404 means the policy has not been configured — it is NOT auto-provisioned.
+// The platform wallet (which holds ETH for gas) must be the source of all transfers.
+// User wallets hold deposited USDC but have no ETH, so they cannot pay gas fees.
 
-let _gasStationStatus: "enabled" | "disabled" | "unknown" = "unknown";
+let _gasStationStatus: "enabled" | "disabled" | "unknown" = "disabled";
 
 export function isGasStationEnabled(): boolean {
-  if (process.env.CIRCLE_GAS_STATION_ENABLED === "true") return true;
   return _gasStationStatus === "enabled";
 }
 
 export async function probeGasStationStatus(): Promise<void> {
-  // Env var override — skip the probe entirely
-  if (process.env.CIRCLE_GAS_STATION_ENABLED === "true") {
-    _gasStationStatus = "enabled";
-    console.info("[Circle] Gas Station: enabled (env override)");
-    return;
-  }
-
   try {
     const res = await circleHttpClient.get("/v1/w3s/config/entity/gasStation", {
       validateStatus: () => true,
@@ -61,15 +47,12 @@ export async function probeGasStationStatus(): Promise<void> {
     if (res.status === 200) {
       const enabled = res.data?.data?.enabled ?? res.data?.enabled;
       _gasStationStatus = enabled ? "enabled" : "disabled";
-    } else if (res.status === 404) {
-      // 404 on testnet is expected — Circle auto-provisions a default policy and
-      // does not expose it through this API. Treat as enabled.
-      _gasStationStatus = "enabled";
     } else {
+      // 404 or any other status = not configured → disabled
       _gasStationStatus = "disabled";
     }
   } catch {
-    _gasStationStatus = "unknown";
+    _gasStationStatus = "disabled";
   }
   console.info(`[Circle] Gas Station: ${_gasStationStatus}`);
 }
@@ -94,6 +77,8 @@ function getDcwClient() {
     _dcwClient = initiateDeveloperControlledWalletsClient({
       apiKey: CIRCLE_API_KEY,
       entitySecret: CIRCLE_ENTITY_SECRET,
+      // Do NOT set baseUrl. Circle routes TEST_API_KEY requests to sandbox
+      // automatically through api.circle.com. api-sandbox.circle.com returns 401.
     });
   }
   return _dcwClient;
@@ -117,62 +102,43 @@ async function ensureWalletSet(): Promise<string | null> {
   return null;
 }
 
-// ─── HD-wallet fallback ───────────────────────────────────────────────────────
-
-function derivePlatformWallet(userId: number): { walletId: string; address: string; walletIdsJson: string } {
-  const seed = Buffer.from(
-    (process.env.BACKEND_SIGNER_PRIVATE_KEY || "").replace("0x", "").padStart(64, "0"),
-    "hex",
-  );
-  const hdNode = ethers.HDNodeWallet.fromSeed(seed);
-  const derived = hdNode.derivePath(`m/44'/60'/0'/0/${userId}`);
-  const walletId = `platform-${userId}`;
-  // HD wallets are chain-agnostic — same ID for all chains
-  const walletIdsJson = JSON.stringify(
-    Object.fromEntries(SUPPORTED_BLOCKCHAINS.map((b) => [b, walletId])),
-  );
-  return { walletId, address: derived.address, walletIdsJson };
-}
-
 // ─── User wallet creation ─────────────────────────────────────────────────────
-// Creates Circle DCW wallets on ALL supported chains in one call so the user's
-// deposit address is monitored on every chain automatically. The wallets share
-// the same on-chain address within a wallet set.
-// Returns: walletId (primary chain), address (shared), walletIdsJson (all chains).
+// Creates a single Circle DCW wallet on BASE-SEPOLIA for the user.
+// Returns: walletId, address, walletIdsJson (single-entry map for compat).
 
-export async function createUserCircleWallet(userId: number): Promise<{
+export async function createUserCircleWallet(_userId: number): Promise<{
   walletId: string;
   address: string;
   walletIdsJson: string;
 }> {
-  const client     = getDcwClient();
+  const client      = getDcwClient();
   const walletSetId = await ensureWalletSet();
 
-  if (client && walletSetId) {
-    try {
-      const res = await client.createWallets({
-        blockchains: [...SUPPORTED_BLOCKCHAINS] as any[],
-        count: 1,
-        walletSetId,
-        idempotencyKey: randomUUID(),
-      });
-      const wallets: any[] = (res.data as any)?.wallets ?? (res as any)?.wallets ?? [];
-
-      if (wallets.length > 0 && wallets[0]?.address) {
-        const address = wallets[0].address as string;
-        const idsMap: Record<string, string> = {};
-        for (const w of wallets) {
-          idsMap[w.blockchain as string] = w.id as string;
-        }
-        const walletId = idsMap[PRIMARY_BLOCKCHAIN] ?? wallets[0].id;
-        return { walletId, address, walletIdsJson: JSON.stringify(idsMap) };
-      }
-    } catch (e: any) {
-      console.warn("[Circle DCW] Wallet creation failed, using HD fallback:", e?.message || e);
-    }
+  if (!client || !walletSetId) {
+    throw new Error(
+      "Circle DCW is not configured. Set CIRCLE_API_KEY, CIRCLE_ENTITY_SECRET, and CIRCLE_WALLET_SET_ID.",
+    );
   }
 
-  return derivePlatformWallet(userId);
+  // SCA (Smart Contract Account) wallets are required for Gas Station sponsorship.
+  // EOA wallets need native ETH for every transaction; SCA wallets do not.
+  const res = await client.createWallets({
+    blockchains:  ["BASE-SEPOLIA"] as any[],
+    count:        1,
+    walletSetId,
+    accountType:  "SCA" as any,
+    idempotencyKey: randomUUID(),
+  });
+  const wallets: any[] = (res.data as any)?.wallets ?? (res as any)?.wallets ?? [];
+
+  if (wallets.length === 0 || !wallets[0]?.address) {
+    throw new Error("Circle DCW createWallets returned no wallet — check API credentials and wallet set.");
+  }
+
+  const wallet = wallets[0];
+  const walletId = wallet.id as string;
+  const address  = wallet.address as string;
+  return { walletId, address, walletIdsJson: JSON.stringify({ "BASE-SEPOLIA": walletId }) };
 }
 
 // ─── USDC balance + token ID resolution ──────────────────────────────────────
@@ -205,29 +171,41 @@ export async function getWalletUsdcBalance(walletId: string): Promise<string> {
 // Caches per walletId. Falls back to the hardcoded map when the wallet has
 // never held USDC (e.g. freshly created platform wallet).
 async function resolveUsdcTokenId(walletId: string, blockchain: string): Promise<string> {
-  if (_tokenIdCache.has(walletId)) return _tokenIdCache.get(walletId)!;
+  if (_tokenIdCache.has(walletId)) {
+    const cached = _tokenIdCache.get(walletId)!;
+    console.info(`[Circle] resolveUsdcTokenId: cache hit walletId=${walletId} tokenId=${cached}`);
+    return cached;
+  }
 
   const client = getDcwClient();
   if (client) {
     try {
       const res = await client.getWalletTokenBalance({ id: walletId });
       const tokenBalances: any[] = (res.data as any)?.tokenBalances ?? [];
+      console.info(`[Circle] resolveUsdcTokenId: wallet ${walletId} has ${tokenBalances.length} token(s):`,
+        tokenBalances.map(b => `${b.token?.symbol}=${b.token?.id}`).join(", ") || "(none)");
       const usdcEntry = tokenBalances.find(isUsdcToken);
       if (usdcEntry?.token?.id) {
         _tokenIdCache.set(walletId, usdcEntry.token.id);
         return usdcEntry.token.id;
       }
-    } catch {
-      // fall through to hardcoded fallback
+      console.warn(`[Circle] resolveUsdcTokenId: no USDC found in wallet ${walletId} — using fallback`);
+    } catch (e: any) {
+      console.warn(`[Circle] resolveUsdcTokenId: getWalletTokenBalance failed for ${walletId}:`, e?.message);
     }
   }
 
-  return FALLBACK_USDC_TOKEN_IDS[blockchain] ?? FALLBACK_USDC_TOKEN_IDS["MATIC-AMOY"];
+  const fallback = FALLBACK_USDC_TOKEN_IDS[blockchain] ?? FALLBACK_USDC_TOKEN_IDS["MATIC-AMOY"];
+  console.info(`[Circle] resolveUsdcTokenId: using fallback tokenId=${fallback} for blockchain=${blockchain}`);
+  return fallback;
 }
 
 // ─── USDC transfer via Circle DCW ────────────────────────────────────────────
 // Sends USDC from a Circle DCW wallet to any EVM address on the specified chain.
-// `blockchain` is used to pick the correct token ID and platform wallet ID.
+//
+// feeLevel: "MEDIUM" is always required by the Circle API regardless of wallet type.
+// SCA wallets handle gas via EIP-4337 account abstraction — no native ETH needed.
+// EOA wallets use their native ETH balance to pay gas at the specified fee level.
 
 export async function circleTransferUsdc(
   fromWalletAddress: string,
@@ -247,11 +225,10 @@ export async function circleTransferUsdc(
   }
 
   const tokenId = await resolveUsdcTokenId(walletId, blockchain);
+  console.info(`[Circle] transfer: walletId=${walletId} tokenId=${tokenId} blockchain=${blockchain} amount=${amount}`);
 
-  // The SDK's createTransaction wrapper destructures `fee` from the input object
-  // and spreads `fee.config` into the underlying Circle API call.
-  // `fee` must always be an object — if absent, `fee.config` throws TypeError.
-  // Gas Station sponsors the actual gas cost on-chain; feeLevel sets the price tier.
+  // feeLevel is always required by the Circle API.
+  // SCA wallets pay gas via EIP-4337 (no native ETH needed); EOA wallets use their ETH balance.
   const input: any = {
     walletId,
     tokenId,
@@ -302,6 +279,76 @@ export async function circleTransferUsdc(
 // Resolves the Circle wallet ID for a given on-chain address + blockchain.
 // Checks platform wallets first, then user wallets (via circleWalletIdsJson).
 
+// Cache for wallet IDs recovered from the Circle API — avoids repeated API calls
+// for users whose circleWalletIdsJson was null (created before multi-chain support).
+const _recoveredWalletIdCache = new Map<string, string>(); // `${address}:${blockchain}` → walletId
+
+/**
+ * Query the Circle API to find the wallet ID for a given address + blockchain.
+ * Used as a one-time recovery path for users missing circleWalletIdsJson.
+ * Writes the result back to the DB so future sweeps don't need the API call.
+ */
+async function recoverWalletIdFromCircle(
+  walletAddress: string,
+  blockchain: string,
+): Promise<string | null> {
+  const cacheKey = `${walletAddress.toLowerCase()}:${blockchain}`;
+  if (_recoveredWalletIdCache.has(cacheKey)) {
+    return _recoveredWalletIdCache.get(cacheKey)!;
+  }
+
+  const client = getDcwClient();
+  if (!client || !CIRCLE_WALLET_SET_ID) return null;
+
+  try {
+    // List wallets in the wallet set filtered by blockchain, then match by address
+    const res = await client.listWallets({
+      walletSetId: CIRCLE_WALLET_SET_ID,
+      blockchain: blockchain as any,
+      pageSize: 50,
+    });
+    const wallets: any[] = (res.data as any)?.wallets ?? (res as any)?.wallets ?? [];
+    const match = wallets.find(
+      (w: any) => w.address?.toLowerCase() === walletAddress.toLowerCase(),
+    );
+
+    if (!match?.id) return null;
+
+    _recoveredWalletIdCache.set(cacheKey, match.id);
+    console.info(`[Circle] Recovered walletId ${match.id} for ${walletAddress} on ${blockchain}`);
+
+    // Backfill circleWalletIdsJson in the DB so this lookup never happens again
+    try {
+      const { db, usersTable } = await import("@workspace/db");
+      const { sql, eq } = await import("drizzle-orm");
+      const [user] = await db
+        .select({ id: usersTable.id, circleWalletIdsJson: (usersTable as any).circleWalletIdsJson })
+        .from(usersTable)
+        .where(sql`lower(${usersTable.circleWalletAddress}) = lower(${walletAddress})`)
+        .limit(1);
+
+      if (user) {
+        const existing = user.circleWalletIdsJson
+          ? JSON.parse(user.circleWalletIdsJson) as Record<string, string>
+          : {};
+        existing[blockchain] = match.id;
+        await db
+          .update(usersTable)
+          .set({ circleWalletIdsJson: JSON.stringify(existing) } as any)
+          .where(eq(usersTable.id, user.id));
+        console.info(`[Circle] Backfilled circleWalletIdsJson for user ${user.id} (${blockchain})`);
+      }
+    } catch (e: any) {
+      console.warn(`[Circle] DB backfill failed for ${walletAddress}:`, e?.message);
+    }
+
+    return match.id;
+  } catch (e: any) {
+    console.warn(`[Circle] recoverWalletIdFromCircle failed for ${walletAddress} on ${blockchain}:`, e?.message);
+    return null;
+  }
+}
+
 async function resolveWalletIdForChain(
   walletAddress: string,
   blockchain: string,
@@ -318,7 +365,8 @@ async function resolveWalletIdForChain(
     const { sql } = await import("drizzle-orm");
     const [user] = await db
       .select({
-        circleWalletId:     usersTable.circleWalletId,
+        id:                  usersTable.id,
+        circleWalletId:      usersTable.circleWalletId,
         circleWalletIdsJson: (usersTable as any).circleWalletIdsJson,
       })
       .from(usersTable)
@@ -329,12 +377,21 @@ async function resolveWalletIdForChain(
 
     if (!user) return null;
 
+    // Fast path — per-chain map is populated
     if (user.circleWalletIdsJson) {
       const idsMap = JSON.parse(user.circleWalletIdsJson) as Record<string, string>;
-      return idsMap[blockchain] ?? user.circleWalletId ?? null;
+      if (idsMap[blockchain]) return idsMap[blockchain];
     }
 
-    return user.circleWalletId ?? null;
+    // Fallback — circleWalletId is only valid for the primary chain.
+    // For any other chain, query Circle API to recover the correct wallet ID.
+    if (blockchain === PRIMARY_BLOCKCHAIN) {
+      return user.circleWalletId ?? null;
+    }
+
+    // Recovery path: look up the wallet ID from Circle API and backfill DB
+    const recovered = await recoverWalletIdFromCircle(walletAddress, blockchain);
+    return recovered ?? null;
   } catch {
     return null;
   }
@@ -469,6 +526,83 @@ export async function initiateAchDeposit(
     }
     throw new Error(`Circle ACH deposit error: ${error.response?.data?.message || error.message}`);
   }
+}
+
+// ─── Circle wire bank deposit ─────────────────────────────────────────────────
+
+/**
+ * Creates a Circle wire bank account resource for a specific user.
+ * Circle assigns a unique trackingRef — the user includes this in their wire
+ * transfer reference field so Circle (and we) can identify which user sent funds.
+ *
+ * Sandbox note: bank account details are not verified, so placeholder values work.
+ */
+export async function createCircleWireBankAccount(userId: number): Promise<{
+  id: string;
+  trackingRef: string;
+  status: string;
+}> {
+  const res = await circleHttpClient.post("/v1/businessAccount/banks/wires", {
+    idempotencyKey: randomUUID(),
+    // Placeholder US bank details — Circle sandbox does not verify these.
+    accountNumber: `1000${userId.toString().padStart(8, "0")}`,
+    routingNumber: "121000248", // Wells Fargo ABA
+    billingDetails: {
+      name: `ARC Finance User ${userId}`,
+      city: "San Francisco",
+      country: "US",
+      line1: "1 Market St",
+      district: "CA",
+      postalCode: "94105",
+    },
+    bankAddress: {
+      bankName: "Wells Fargo Bank",
+      city: "San Francisco",
+      country: "US",
+    },
+  });
+  const data = res.data?.data ?? res.data;
+  return { id: data.id, trackingRef: data.trackingRef, status: data.status };
+}
+
+/**
+ * Fetches Circle's wire deposit instructions for a given wire bank account ID.
+ * Returns Circle's bank details (routing, account, SWIFT, beneficiary name).
+ * Users send their wire TO these details and include their trackingRef as the reference.
+ */
+export async function getCircleWireDepositInstructions(wireAccountId: string): Promise<{
+  trackingRef: string;
+  beneficiary: { name: string; address1: string; address2: string };
+  beneficiaryBank: {
+    name: string;
+    swiftCode: string;
+    routingNumber: string;
+    accountNumber: string;
+    currency: string;
+    address: string;
+    city: string;
+    postalCode: string;
+    country: string;
+  };
+}> {
+  const res = await circleHttpClient.get(`/v1/businessAccount/banks/wires/${wireAccountId}/instructions`);
+  return res.data?.data ?? res.data;
+}
+
+/**
+ * Sandbox only: simulate an inbound wire payment.
+ * Circle processes mock wire deposits in batches — credit may take up to 15 minutes.
+ */
+export async function createMockWireDeposit(
+  trackingRef: string,
+  circleAccountNumber: string,
+  amountUsd: string,
+): Promise<void> {
+  await circleHttpClient.post("/v1/mocks/payments/wire", {
+    trackingRef,
+    amount: { amount: amountUsd, currency: "USD" },
+    beneficiaryBank: { accountNumber: circleAccountNumber },
+  });
 }
 
 // ─── Circle webhook subscription ─────────────────────────────────────────────

@@ -294,6 +294,70 @@ export async function sendOtpEmail(to: string, code: string, type: "register" | 
   });
 }
 
+export async function sendVerificationEmail(to: string, verificationUrl: string): Promise<void> {
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="padding:40px 16px;">
+    <tr><td align="center">
+      <table width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;">
+        <tr><td align="center" style="padding-bottom:24px;">
+          <div style="width:48px;height:48px;background:linear-gradient(135deg,#2563eb,#7c3aed);border-radius:14px;display:inline-flex;align-items:center;justify-content:center;">
+            <span style="color:#fff;font-size:22px;">↗</span>
+          </div>
+          <p style="margin:8px 0 0;font-weight:700;font-size:18px;color:#0f172a;">USDC Send</p>
+        </td></tr>
+        <tr><td style="background:#fff;border-radius:20px;padding:40px 36px;box-shadow:0 4px 20px rgba(0,0,0,0.08);">
+          <p style="margin:0 0 8px;font-size:22px;font-weight:700;color:#0f172a;">Confirm your email address</p>
+          <p style="margin:0 0 32px;color:#64748b;font-size:15px;line-height:1.6;">
+            Click the button below to verify your email and activate your account.
+            This link expires in <strong>24 hours</strong>.
+          </p>
+          <div style="text-align:center;margin-bottom:32px;">
+            <a href="${verificationUrl}"
+               style="display:inline-block;background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;font-weight:700;font-size:15px;padding:14px 36px;border-radius:12px;text-decoration:none;">
+              Verify my email
+            </a>
+          </div>
+          <p style="margin:0;color:#94a3b8;font-size:13px;line-height:1.6;">
+            Or copy this link into your browser:<br>
+            <a href="${verificationUrl}" style="color:#2563eb;word-break:break-all;">${verificationUrl}</a>
+          </p>
+          <p style="margin:16px 0 0;color:#94a3b8;font-size:13px;">
+            If you didn't create an account, you can safely ignore this email.
+          </p>
+        </td></tr>
+        <tr><td style="padding:24px 0;text-align:center;">
+          <p style="margin:0;color:#94a3b8;font-size:12px;">&copy; ${new Date().getFullYear()} USDC Send. All rights reserved.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  const transporter = getTransporter();
+  if (!transporter) {
+    console.log(`\n──────────────────────────────────────────────`);
+    console.log(`  EMAIL VERIFICATION LINK for ${to}`);
+    console.log(`  URL: ${verificationUrl}`);
+    console.log(`──────────────────────────────────────────────\n`);
+    return;
+  }
+
+  await transporter.sendMail({
+    from: FROM,
+    to,
+    subject: "Verify your USDC Send account",
+    html,
+  });
+}
+
 const SECURITY_ACTION_LABELS: Record<string, { subject: string; heading: string; desc: string }> = {
   "txn-pwd":     { subject: "Set your transaction password",         heading: "Set transaction password", desc: "to set your transaction password" },
   "pak-gen":     { subject: "Generate your Personal Authorization Key", heading: "Generate PAK",          desc: "to generate your Personal Authorization Key (PAK)" },

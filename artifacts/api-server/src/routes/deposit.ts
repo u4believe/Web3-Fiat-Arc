@@ -2,198 +2,214 @@ import { Router, type IRouter } from "express";
 import { db, usersTable, depositsTable, virtualAccountsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth } from "../lib/auth.js";
-import { getNgnToUsdRate, ngnToUsd } from "../lib/fx.js";
 import {
-  createPaystackVirtualAccount,
-  verifyPaystackSignature,
-  parsePaystackCharge,
-} from "../lib/paystack.js";
+  createCircleWireBankAccount,
+  getCircleWireDepositInstructions,
+  createMockWireDeposit,
+  circleTransferUsdc,
+  getPlatformWalletAddress,
+  PRIMARY_USDC_ADDRESS,
+  type SupportedBlockchain,
+} from "../lib/circle.js";
+
+const CIRCLE_CHAIN_MAP: Record<string, SupportedBlockchain> = {
+  "BASE-SEPOLIA": "BASE-SEPOLIA",
+};
 
 const router: IRouter = Router();
 
-// ─── Shared: credit a user's balance and record the deposit ─────────────────
-async function creditDeposit(
-  userId: number,
-  amountNgn: number,
-  provider: string,
-  providerTxRef: string,
-  logger: (...args: any[]) => void,
-) {
-  const rate      = await getNgnToUsdRate();
-  const amountUsd = ngnToUsd(amountNgn, rate);
-
-  const [dbUser] = await db
-    .select({ claimedBalance: usersTable.claimedBalance })
-    .from(usersTable)
-    .where(eq(usersTable.id, userId))
-    .limit(1);
-
-  const newBalance = (parseFloat(dbUser?.claimedBalance ?? "0") + amountUsd).toFixed(6);
-
-  await db.update(usersTable).set({ claimedBalance: newBalance }).where(eq(usersTable.id, userId));
-
-  await db.insert(depositsTable).values({
-    userId,
-    amount: amountUsd.toFixed(6),
-    type: "bank",
-    source: provider,
-    status: "completed",
-    depositReference: providerTxRef,
-    circlePaymentId:  providerTxRef,
-    creditedAt: new Date(),
-  });
-
-  logger({ userId, amountNgn, amountUsd, provider, providerTxRef }, `[deposit/webhook] ${provider} deposit credited`);
-}
-
-// ─── GET /api/deposit/bank/virtual-accounts ──────────────────────────────────
-router.get("/bank/virtual-accounts", requireAuth, async (req, res) => {
+// ─── GET /api/deposit/wire/instructions ──────────────────────────────────────
+// Returns Circle's wire deposit instructions for the authenticated user.
+// Creates a unique wire bank account (and tracking reference) on first call,
+// then reuses it on subsequent calls.
+router.get("/wire/instructions", requireAuth, async (req, res) => {
   try {
     const user = (req as any).user;
-    const accounts = await db
-      .select()
-      .from(virtualAccountsTable)
-      .where(eq(virtualAccountsTable.userId, user.userId));
-    res.json({ accounts });
-  } catch (error: any) {
-    req.log.error({ err: error }, "[deposit] Fetch virtual accounts error");
-    res.status(500).json({ error: "Internal server error", message: error.message });
-  }
-});
 
-// ─── POST /api/deposit/bank/virtual-account ───────────────────────────────────
-// Body: { provider: "paystack" }
-router.post("/bank/virtual-account", requireAuth, async (req, res) => {
-  try {
-    const user = (req as any).user;
-    const { provider } = req.body;
-
-    if (provider !== "paystack") {
-      res.status(400).json({ error: "Invalid provider", message: "Only paystack is supported" });
-      return;
-    }
-
-    // Return existing account if already generated
+    // Reuse existing wire account if already created for this user
     const [existing] = await db
       .select()
       .from(virtualAccountsTable)
       .where(and(
         eq(virtualAccountsTable.userId, user.userId),
-        eq(virtualAccountsTable.provider, provider),
+        eq(virtualAccountsTable.provider, "circle-wire"),
       ))
       .limit(1);
 
+    let wireAccountId: string;
+    let trackingRef: string;
+
     if (existing) {
-      res.json({ account: existing, created: false });
-      return;
+      wireAccountId = existing.providerRef!;
+      trackingRef   = existing.accountNumber; // accountNumber stores trackingRef
+    } else {
+      // First time — create a wire bank account for this user
+      const wire = await createCircleWireBankAccount(user.userId);
+      wireAccountId = wire.id;
+      trackingRef   = wire.trackingRef;
+
+      await db.insert(virtualAccountsTable).values({
+        userId:        user.userId,
+        provider:      "circle-wire",
+        accountNumber: trackingRef,         // unique ref user includes in wire memo
+        accountName:   "ARC Finance",
+        bankName:      "Circle / JPMorgan Chase",
+        bankCode:      null,
+        providerRef:   wireAccountId,       // Circle wire bank account ID
+        currency:      "USD",
+      });
+
+      req.log.info({ userId: user.userId, trackingRef, wireAccountId }, "[deposit] Circle wire account created");
     }
 
-    const [dbUser] = await db
-      .select({ email: usersTable.email, name: usersTable.name })
-      .from(usersTable)
-      .where(eq(usersTable.id, user.userId))
-      .limit(1);
+    // Always fetch fresh instructions from Circle (bank details may change)
+    const instructions = await getCircleWireDepositInstructions(wireAccountId);
 
-    const email = dbUser?.email ?? user.email;
-    const name  = dbUser?.name  ?? "Arc User";
-
-    const result = await createPaystackVirtualAccount(user.userId, email, name);
-
-    const [inserted] = await db
-      .insert(virtualAccountsTable)
-      .values({
-        userId:        user.userId,
-        provider:      "paystack",
-        accountNumber: result.accountNumber,
-        accountName:   result.accountName,
-        bankName:      result.bankName,
-        bankCode:      result.bankCode,
-        providerRef:   result.customerCode,
-        currency:      "NGN",
-      })
-      .returning();
-
-    req.log.info({ accountNumber: inserted.accountNumber, userId: user.userId }, "[deposit] Paystack virtual account created");
-    res.json({ account: inserted, created: true });
+    res.json({
+      trackingRef,
+      beneficiary:     instructions.beneficiary,
+      beneficiaryBank: instructions.beneficiaryBank,
+    });
   } catch (error: any) {
-    req.log.error({ err: error }, "[deposit] Virtual account creation error");
+    req.log.error({ err: error }, "[deposit] Wire instructions error");
     res.status(500).json({ error: "Internal server error", message: error.message });
   }
 });
 
-// ─── POST /api/deposit/paystack/webhook ──────────────────────────────────────
-// Paystack fires "charge.success" when funds land on a dedicated virtual account.
-// Verified via x-paystack-signature (HMAC-SHA512 of raw body).
-router.post("/paystack/webhook", async (req, res) => {
-  const rawBody   = (req as any).rawBody as Buffer | undefined;
-  const sigHeader = String(req.headers["x-paystack-signature"] ?? "");
-
-  if (!rawBody || !verifyPaystackSignature(rawBody, sigHeader)) {
-    res.status(401).json({ error: "Invalid signature" });
-    return;
-  }
-
+// ─── POST /api/deposit/wire/mock ──────────────────────────────────────────────
+// Sandbox only: simulate an incoming wire payment for the authenticated user.
+// Body: { amount: "100.00" }
+router.post("/wire/mock", requireAuth, async (req, res) => {
   try {
-    const event = parsePaystackCharge(req.body);
-    if (!event || event.channel !== "dedicated_nuban") {
-      res.status(200).json({ received: true });
+    const user = (req as any).user;
+    const { amount } = req.body;
+
+    if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) {
+      res.status(400).json({ error: "Invalid amount", message: "Provide a positive USD amount" });
       return;
     }
 
-    const [dbUser] = await db
-      .select({ id: usersTable.id })
-      .from(usersTable)
-      .where(eq(usersTable.email, event.email))
+    const [wireAccount] = await db
+      .select()
+      .from(virtualAccountsTable)
+      .where(and(
+        eq(virtualAccountsTable.userId, user.userId),
+        eq(virtualAccountsTable.provider, "circle-wire"),
+      ))
       .limit(1);
 
-    if (!dbUser) {
-      console.warn({ email: event.email }, "[paystack/webhook] Unknown user");
-      res.status(200).json({ received: true });
+    if (!wireAccount) {
+      res.status(400).json({ error: "No wire account", message: "Load wire instructions first to create your deposit account" });
       return;
     }
 
-    await creditDeposit(dbUser.id, event.amountNgn, "paystack", event.paystackRef, console.info);
-    res.status(200).json({ received: true });
+    const instructions = await getCircleWireDepositInstructions(wireAccount.providerRef!);
+
+    await createMockWireDeposit(
+      wireAccount.accountNumber,                    // trackingRef
+      instructions.beneficiaryBank.accountNumber,   // Circle's account number
+      parseFloat(amount).toFixed(2),
+    );
+
+    req.log.info({ userId: user.userId, amount }, "[deposit] Mock wire deposit initiated");
+    res.json({
+      message:   "Mock wire deposit submitted. Circle processes in batches — your balance will be credited within 15 minutes.",
+      amount:    parseFloat(amount).toFixed(2),
+      currency:  "USD",
+    });
   } catch (error: any) {
-    console.error({ err: error }, "[paystack/webhook] Error");
-    res.status(200).json({ received: true });
+    req.log.error({ err: error }, "[deposit] Mock wire error");
+    res.status(500).json({ error: "Internal server error", message: error.message });
   }
 });
 
 // ─── POST /api/deposit/circle/webhook ────────────────────────────────────────
-// Circle fires this when USDC lands in any user's Developer-Controlled Wallet.
-// Supports all Circle-connected networks (Polygon Amoy, Ethereum, Base, etc.)
-// Webhook payload reference:
-//   notificationType: "transactions.inbound"
-//   notification.state: "COMPLETED"
-//   notification.walletId: Circle wallet ID
-//   notification.amounts: ["10"]  (string array)
-//   notification.id: transaction ID (used for idempotency)
+// Handles two event types from Circle:
+//   1. "payments"            — wire (fiat) deposits credited to the Circle account
+//   2. "transactions.inbound"— USDC on-chain deposits to a user's Circle DCW wallet
 router.post("/circle/webhook", async (req, res) => {
-  // Always respond 200 immediately — Circle retries if it doesn't get 200 within 5s
+  // Always respond 200 immediately — Circle retries if no 200 within 5 s
   res.status(200).json({ received: true });
 
   try {
     const { notificationType, notification } = req.body ?? {};
+    console.info(`[circle/webhook] notificationType=${notificationType} body=${JSON.stringify(req.body).slice(0, 400)}`);
 
-    // Log every webhook arrival for debugging (before any filtering)
-    console.info(`[circle/webhook] Received notificationType=${notificationType} body=${JSON.stringify(req.body).slice(0, 300)}`);
+    // ── Wire (fiat) payment ───────────────────────────────────────────────────
+    if (notificationType === "payments") {
+      const payment = notification?.payment ?? notification;
+      if (!payment) return;
 
+      const { id: paymentId, type, status, trackingRef, amount } = payment;
+      console.info(`[circle/webhook] Payment: type=${type} status=${status} trackingRef=${trackingRef} amount=${JSON.stringify(amount)}`);
+
+      if (type !== "wire" || status !== "paid") return;
+      if (!trackingRef || !amount?.amount) return;
+
+      const amountUsd = parseFloat(amount.amount);
+      if (amountUsd <= 0) return;
+
+      // Idempotency — skip if we already credited this payment
+      if (paymentId) {
+        const [dup] = await db
+          .select({ id: depositsTable.id })
+          .from(depositsTable)
+          .where(eq(depositsTable.depositReference, paymentId))
+          .limit(1);
+        if (dup) return;
+      }
+
+      // Resolve user by their unique trackingRef
+      const [wireAccount] = await db
+        .select({ userId: virtualAccountsTable.userId })
+        .from(virtualAccountsTable)
+        .where(and(
+          eq(virtualAccountsTable.provider, "circle-wire"),
+          eq(virtualAccountsTable.accountNumber, trackingRef),
+        ))
+        .limit(1);
+
+      if (!wireAccount) {
+        console.warn(`[circle/webhook] No wire account found for trackingRef=${trackingRef}`);
+        return;
+      }
+
+      const [dbUser] = await db
+        .select({ claimedBalance: usersTable.claimedBalance })
+        .from(usersTable)
+        .where(eq(usersTable.id, wireAccount.userId))
+        .limit(1);
+
+      const newBalance = (parseFloat(dbUser?.claimedBalance ?? "0") + amountUsd).toFixed(6);
+      await db.update(usersTable).set({ claimedBalance: newBalance }).where(eq(usersTable.id, wireAccount.userId));
+
+      await db.insert(depositsTable).values({
+        userId:           wireAccount.userId,
+        amount:           amountUsd.toFixed(6),
+        type:             "bank",
+        source:           "Circle Wire Transfer",
+        status:           "completed",
+        depositReference: paymentId ?? trackingRef,
+        creditedAt:       new Date(),
+      });
+
+      console.info(`[circle/webhook] Credited $${amountUsd} USD wire deposit to user ${wireAccount.userId}`);
+      return;
+    }
+
+    // ── USDC on-chain inbound ─────────────────────────────────────────────────
     if (notificationType !== "transactions.inbound") return;
     if (!notification) return;
 
     const { id: txId, walletId, amounts, blockchain, txHash, state, destinationAddress } = notification;
-
     console.info(`[circle/webhook] Inbound: state=${state} walletId=${walletId} address=${destinationAddress} amount=${amounts?.[0]} chain=${blockchain}`);
 
-    // Circle sends "COMPLETED" for fully settled inbound transfers
     if (state !== "COMPLETED") return;
     if (!amounts?.length) return;
 
     const amount = String(amounts[0] ?? "0");
     if (!amount || parseFloat(amount) <= 0) return;
 
-    // Find the user — try by circleWalletId first, then fall back to wallet address
     let dbUser: { id: number; claimedBalance: string } | undefined;
 
     if (walletId) {
@@ -216,11 +232,10 @@ router.post("/circle/webhook", async (req, res) => {
     }
 
     if (!dbUser) {
-      console.warn(`[circle/webhook] No user found for walletId=${walletId} address=${destinationAddress}`);
+      console.warn(`[circle/webhook] No user for walletId=${walletId} address=${destinationAddress}`);
       return;
     }
 
-    // Idempotency — use Circle's transaction ID (txId) to avoid double-crediting
     const idempotencyRef = txId ?? txHash ?? "";
     if (idempotencyRef) {
       const existing = await db
@@ -232,23 +247,31 @@ router.post("/circle/webhook", async (req, res) => {
     }
 
     const newBalance = (parseFloat(dbUser.claimedBalance ?? "0") + parseFloat(amount)).toFixed(6);
-
-    await db.update(usersTable)
-      .set({ claimedBalance: newBalance })
-      .where(eq(usersTable.id, dbUser.id));
+    await db.update(usersTable).set({ claimedBalance: newBalance }).where(eq(usersTable.id, dbUser.id));
 
     await db.insert(depositsTable).values({
-      userId: dbUser.id,
-      amount: parseFloat(amount).toFixed(6),
-      type: "crypto",
-      source: `${blockchain ?? "Circle"} USDC`,
-      status: "completed",
+      userId:           dbUser.id,
+      amount:           parseFloat(amount).toFixed(6),
+      type:             "crypto",
+      source:           `${blockchain ?? "Circle"} USDC`,
+      status:           "completed",
       depositReference: idempotencyRef || null,
-      txHash: txHash ?? null,
-      creditedAt: new Date(),
+      txHash:           txHash ?? null,
+      creditedAt:       new Date(),
     });
 
-    console.info(`[circle/webhook] Credited ${amount} USDC to user ${dbUser.id} from ${blockchain} (circleId: ${txId})`);
+    console.info(`[circle/webhook] Credited ${amount} USDC to user ${dbUser.id} from ${blockchain} (id: ${txId})`);
+
+    // Sweep on-chain USDC deposits to the platform treasury
+    const circleChain = blockchain ? CIRCLE_CHAIN_MAP[blockchain.toUpperCase()] : undefined;
+    if (circleChain && destinationAddress) {
+      const platformAddress = getPlatformWalletAddress();
+      if (platformAddress && destinationAddress.toLowerCase() !== platformAddress.toLowerCase()) {
+        circleTransferUsdc(destinationAddress, platformAddress, circleChain, PRIMARY_USDC_ADDRESS, parseFloat(amount).toFixed(6))
+          .then(() => console.info(`[circle/webhook] Swept ${amount} USDC to ${circleChain} treasury`))
+          .catch((e: any) => console.warn(`[circle/webhook] Sweep failed: ${e?.message}`));
+      }
+    }
   } catch (err: any) {
     console.error("[circle/webhook] Error:", err?.message);
   }

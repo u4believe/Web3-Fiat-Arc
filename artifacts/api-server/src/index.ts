@@ -2,9 +2,9 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { startPolygonIndexer, stopPolygonIndexer } from "./lib/polygonIndexer.js";
 import { startRecurringWorker, stopRecurringWorker } from "./lib/recurringWorker.js";
-import { startSweepWorker, stopSweepWorker } from "./lib/circleSweepWorker.js";
 import { probeGasStationStatus } from "./lib/circle.js";
 import { registerPaystackWebhook } from "./lib/paystack.js";
+import { stopCctpConsolidator } from "./lib/cctp.js";
 
 const rawPort = process.env["PORT"];
 
@@ -39,11 +39,14 @@ app.listen(port, (err) => {
   // Start the recurring transfers worker
   startRecurringWorker();
 
+  // CCTP consolidator — disabled on testnet: Circle's CCTP v1 contracts at the
+  // standard testnet addresses have zero historical usage and depositForBurn reverts
+  // consistently on ETH-SEPOLIA. Will be re-enabled when moving to mainnet.
+  // startCctpConsolidator();
+
   // Probe Circle Gas Station status (non-blocking)
   probeGasStationStatus().catch(() => {});
 
-  // Start the Circle DCW sweep worker (consolidates user USDC into platform wallet)
-  startSweepWorker();
 });
 
 // Graceful shutdown
@@ -51,7 +54,7 @@ process.on("SIGTERM", async () => {
   logger.info("SIGTERM received, shutting down");
   stopPolygonIndexer();
   stopRecurringWorker();
-  stopSweepWorker();
+  stopCctpConsolidator();
   process.exit(0);
 });
 
@@ -59,6 +62,6 @@ process.on("SIGINT", async () => {
   logger.info("SIGINT received, shutting down");
   stopPolygonIndexer();
   stopRecurringWorker();
-  stopSweepWorker();
+  stopCctpConsolidator();
   process.exit(0);
 });

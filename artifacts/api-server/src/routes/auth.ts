@@ -5,7 +5,8 @@ import { eq, and, gt } from "drizzle-orm";
 import { generateToken, requireAuth } from "../lib/auth.js";
 import { hashEmail } from "../lib/escrow.js";
 import { createUserCircleWallet } from "../lib/circle.js";
-import { sendOtpEmail } from "../lib/email.js";
+import { sendOtpEmail, sendVerificationEmail } from "../lib/email.js";
+import { randomUUID } from "node:crypto";
 import {
   RegisterUserBody,
   LoginUserBody,
@@ -25,8 +26,8 @@ async function issueOtp(userId: number, type: "register" | "login"): Promise<str
 }
 
 // ─── POST /api/auth/register ──────────────────────────────────────────────────
-// Step 1: validates + creates user, sends OTP.
-// Returns { requiresOtp: true, userId } — JWT issued after verify-otp.
+// Creates user account and sends an email verification link.
+// The user must click the link before they can perform any transactions.
 router.post("/register", async (req, res) => {
   try {
     const parsed = RegisterUserBody.safeParse(req.body);
@@ -46,14 +47,18 @@ router.post("/register", async (req, res) => {
     const normalizedEmail = email.toLowerCase().trim();
     const emailHash = hashEmail(normalizedEmail);
     const passwordHash = await bcrypt.hash(password, 10);
+    const verificationToken = randomUUID();
 
     const [user] = await db.insert(usersTable).values({
       email: normalizedEmail,
       emailHash,
       passwordHash,
       name,
-    }).returning();
+      emailVerified: false,
+      emailVerificationToken: verificationToken,
+    } as any).returning();
 
+    // Provision Circle wallet in background
     (async () => {
       try {
         const { walletId, address, walletIdsJson } = await createUserCircleWallet(user.id);
@@ -65,14 +70,88 @@ router.post("/register", async (req, res) => {
       }
     })();
 
-    const code = await issueOtp(user.id, "register");
-    res.status(201).json({ requiresOtp: true, userId: user.id });
-    sendOtpEmail(normalizedEmail, code, "register").catch((e) =>
-      req.log.error({ err: e }, "Failed to send register OTP email"),
+    const appUrl = process.env.APP_URL?.replace(/\/$/, "") || `http://localhost:${process.env.PORT || 3001}`;
+    const verificationUrl = `${appUrl}/api/auth/verify-email?token=${verificationToken}`;
+
+    res.status(201).json({ requiresEmailVerification: true, email: normalizedEmail });
+    sendVerificationEmail(normalizedEmail, verificationUrl).catch((e) =>
+      req.log.error({ err: e }, "Failed to send verification email"),
     );
   } catch (error: any) {
     req.log.error({ err: error }, "Registration error");
     res.status(500).json({ error: "Internal server error", message: error.message });
+  }
+});
+
+// ─── GET /api/auth/verify-email ───────────────────────────────────────────────
+// Clicked from the link in the verification email. Marks email as verified and
+// redirects the user to the login page with a ?verified=true flag.
+router.get("/verify-email", async (req, res) => {
+  const token = typeof req.query.token === "string" ? req.query.token.trim() : "";
+
+  if (!token) {
+    res.redirect("/login?error=missing-token");
+    return;
+  }
+
+  try {
+    const [user] = await db
+      .select()
+      .from(usersTable)
+      .where(eq((usersTable as any).emailVerificationToken, token))
+      .limit(1);
+
+    if (!user) {
+      res.redirect("/login?error=invalid-token");
+      return;
+    }
+
+    if ((user as any).emailVerified) {
+      // Already verified — just redirect to login
+      res.redirect("/login?verified=already");
+      return;
+    }
+
+    await db.update(usersTable)
+      .set({ emailVerified: true, emailVerificationToken: null } as any)
+      .where(eq(usersTable.id, user.id));
+
+    req.log.info({ userId: user.id }, "[auth] Email verified");
+    res.redirect("/login?verified=true");
+  } catch (error: any) {
+    req.log.error({ err: error }, "Email verification error");
+    res.redirect("/login?error=server-error");
+  }
+});
+
+// ─── POST /api/auth/resend-verification ──────────────────────────────────────
+// Sends a fresh verification email for an unverified account.
+router.post("/resend-verification", async (req, res) => {
+  const { email } = req.body as { email?: unknown };
+  if (typeof email !== "string" || !email.trim()) {
+    res.status(400).json({ error: "Validation error", message: "email is required" });
+    return;
+  }
+
+  try {
+    const normalizedEmail = email.toLowerCase().trim();
+    const [user] = await db.select().from(usersTable).where(eq(usersTable.email, normalizedEmail)).limit(1);
+
+    // Always return success to avoid email enumeration
+    res.json({ success: true, message: "If that email exists and is unverified, a new link has been sent." });
+
+    if (!user || (user as any).emailVerified) return;
+
+    const verificationToken = randomUUID();
+    await db.update(usersTable)
+      .set({ emailVerificationToken: verificationToken } as any)
+      .where(eq(usersTable.id, user.id));
+
+    const appUrl = process.env.APP_URL?.replace(/\/$/, "") || `http://localhost:${process.env.PORT || 3001}`;
+    const verificationUrl = `${appUrl}/api/auth/verify-email?token=${verificationToken}`;
+    sendVerificationEmail(normalizedEmail, verificationUrl).catch(console.error);
+  } catch (error: any) {
+    req.log.error({ err: error }, "Resend verification error");
   }
 });
 
@@ -111,9 +190,9 @@ router.post("/login", async (req, res) => {
     if (!user.circleWalletAddress) {
       (async () => {
         try {
-          const { walletId, address } = await createUserCircleWallet(user.id);
+          const { walletId, address, walletIdsJson } = await createUserCircleWallet(user.id);
           await db.update(usersTable)
-            .set({ circleWalletId: walletId, circleWalletAddress: address })
+            .set({ circleWalletId: walletId, circleWalletAddress: address, circleWalletIdsJson: walletIdsJson } as any)
             .where(eq(usersTable.id, user.id));
         } catch (e: any) {
           console.warn(`[Circle] Wallet backfill failed for user ${user.id}:`, e?.message || e);
@@ -236,9 +315,9 @@ router.get("/me", requireAuth, async (req, res) => {
     if (!dbUser.circleWalletAddress) {
       (async () => {
         try {
-          const { walletId, address } = await createUserCircleWallet(dbUser.id);
+          const { walletId, address, walletIdsJson } = await createUserCircleWallet(dbUser.id);
           await db.update(usersTable)
-            .set({ circleWalletId: walletId, circleWalletAddress: address })
+            .set({ circleWalletId: walletId, circleWalletAddress: address, circleWalletIdsJson: walletIdsJson } as any)
             .where(eq(usersTable.id, dbUser.id));
         } catch (e: any) {
           console.warn(`[Circle] Wallet backfill failed for user ${dbUser.id}:`, e?.message || e);
@@ -265,6 +344,7 @@ router.get("/me", requireAuth, async (req, res) => {
       walletAddress: dbUser.walletAddress,
       circleWalletAddress: dbUser.circleWalletAddress,
       createdAt: dbUser.createdAt,
+      emailVerified: !!(dbUser as any).emailVerified,
       // Security status
       hasTransactionPassword: !!dbUser.transactionPasswordHash,
       hasPak,

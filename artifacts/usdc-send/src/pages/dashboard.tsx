@@ -409,6 +409,93 @@ function DashSidebar({ activePage, onNavigate, collapsed, onToggleCollapse, mobi
   );
 }
 
+// ─── Email Verification Pending overlay ───────────────────────────────────────
+
+function EmailVerificationPending({ email }: { email: string }) {
+  const [resent, setResent] = useState(false);
+  const [sending, setSending] = useState(false);
+  const BASE_URL = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+  const resend = async () => {
+    setSending(true);
+    try {
+      await fetch(`${BASE_URL}/api/auth/resend-verification`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      setResent(true);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-blue-50/60 to-indigo-50/80 p-4">
+      <div className="w-full max-w-md bg-white rounded-3xl shadow-xl border border-border p-10 text-center space-y-6">
+        <div className="flex justify-center">
+          <div className="w-16 h-16 rounded-2xl bg-violet-100 flex items-center justify-center">
+            <Mail className="w-8 h-8 text-violet-600" />
+          </div>
+        </div>
+        <div>
+          <h2 className="text-2xl font-bold text-foreground mb-2">Verify your email</h2>
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            We sent a verification link to <strong className="text-foreground">{email}</strong>.
+            Please click the link to activate your account.
+          </p>
+        </div>
+        <div className="space-y-3">
+          {resent && <p className="text-sm text-green-600 font-medium">A new verification link has been sent.</p>}
+          <button onClick={resend} disabled={sending}
+            className="w-full py-3 rounded-xl bg-primary text-white font-bold hover:bg-primary/90 transition-colors disabled:opacity-60 flex items-center justify-center gap-2">
+            {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <><RefreshCw className="w-4 h-4" /> Resend verification email</>}
+          </button>
+          <button onClick={() => { localStorage.removeItem("token"); window.location.href = "/login"; }}
+            className="w-full py-3 rounded-xl border border-border text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors">
+            Sign out
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Account Setup Wizard overlay ─────────────────────────────────────────────
+
+function AccountSetupWizard({ user, onComplete }: { user: any; onComplete: () => void }) {
+  const needsPak = !user.hasPak;
+  const needsTxnPwd = !user.hasTransactionPassword;
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-blue-50/60 to-indigo-50/80 p-4">
+      <div className="w-full max-w-2xl bg-white rounded-3xl shadow-xl border border-border overflow-hidden">
+        {/* Header */}
+        <div className="bg-gradient-to-r from-violet-600 to-indigo-600 px-8 py-6 text-white">
+          <h2 className="text-2xl font-bold">Complete your account setup</h2>
+          <p className="text-violet-200 text-sm mt-1">
+            Before you can use the platform, you need to secure your account.
+          </p>
+          <div className="flex items-center gap-3 mt-4">
+            <div className={`flex items-center gap-2 text-sm font-medium px-3 py-1 rounded-full ${!needsPak ? 'bg-white/20 line-through opacity-60' : 'bg-white text-violet-700'}`}>
+              <span className="w-5 h-5 rounded-full bg-violet-600 text-white text-xs flex items-center justify-center font-bold">1</span>
+              Personal Authorization Key
+            </div>
+            <div className={`flex items-center gap-2 text-sm font-medium px-3 py-1 rounded-full ${!needsTxnPwd ? 'bg-white/20 line-through opacity-60' : 'bg-white/10 text-white'}`}>
+              <span className="w-5 h-5 rounded-full bg-white/20 text-white text-xs flex items-center justify-center font-bold">2</span>
+              Transaction Password
+            </div>
+          </div>
+        </div>
+        {/* Body */}
+        <div className="p-8">
+          <SecurityTab user={user} onSecurityUpdated={onComplete} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -488,6 +575,14 @@ export default function Dashboard() {
         </div>
       </AppLayout>
     );
+  }
+
+  if (user && !(user as any).emailVerified) {
+    return <EmailVerificationPending email={user.email} />;
+  }
+
+  if (user && (user as any).emailVerified && (!user.hasPak || !(user as any).hasTransactionPassword)) {
+    return <AccountSetupWizard user={user} onComplete={() => queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] })} />;
   }
 
   // Wallet-free server-side claim — uses the platform's Circle-managed backend wallet.
@@ -2577,7 +2672,7 @@ function CryptoDepositPanel({ walletAddress }: { walletAddress?: string }) {
     >
       <motion.div variants={fadeUp} className="flex items-start gap-3 px-4 py-3 rounded-xl bg-violet-50 border border-violet-200 text-violet-700 text-sm">
         <QrCode className="w-4 h-4 shrink-0 mt-0.5" />
-        <span>Send <strong>USDC</strong> to your deposit address below from any supported testnet — <strong>Base Sepolia</strong>, <strong>Polygon Amoy</strong>, or <strong>Ethereum Sepolia</strong>. Your balance is credited automatically within seconds.</span>
+        <span>Send <strong>USDC</strong> on <strong>Base Sepolia</strong> to your deposit address below. Your balance is credited automatically within seconds.</span>
       </motion.div>
 
       {address ? (
@@ -2588,7 +2683,7 @@ function CryptoDepositPanel({ walletAddress }: { walletAddress?: string }) {
               <code className="flex-1 text-xs font-mono break-all text-foreground">{address}</code>
               <CopyButton text={address} />
             </div>
-            <p className="text-xs text-muted-foreground">Only send USDC on supported networks. Sending other tokens or using a different network may result in permanent loss.</p>
+            <p className="text-xs text-muted-foreground">Only send USDC on <strong>Base Sepolia</strong>. Sending other tokens or using any other network will result in permanent loss of funds.</p>
           </motion.div>
 
           <motion.div variants={fadeUp} className="flex items-start gap-3 px-4 py-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 text-xs">
@@ -2606,214 +2701,181 @@ function CryptoDepositPanel({ walletAddress }: { walletAddress?: string }) {
   );
 }
 
-// ─── Direct Bank Deposit — provider virtual account ──────────────────────────
-// User selects a provider → system generates a permanent virtual bank account.
-// User transfers any amount to that account at any time.
-// Balance is credited automatically via provider webhook — no manual confirmation.
+// ─── Direct Bank Deposit — Circle wire transfer ───────────────────────────────
+// User is shown Circle's wire deposit instructions and their unique tracking ref.
+// They send a USD wire from their bank — balance is credited when Circle receives it.
+// Sandbox: a "Simulate Deposit" button calls the mock wire endpoint for testing.
 
-type Provider = "paystack" | "flutterwave" | "monnify";
-
-interface VirtualAccount {
-  id: number;
-  provider: Provider;
-  accountNumber: string;
-  accountName: string;
-  bankName: string;
+interface WireInstructions {
+  trackingRef: string;
+  beneficiary: { name: string; address1: string; address2: string };
+  beneficiaryBank: {
+    name: string;
+    swiftCode: string;
+    routingNumber: string;
+    accountNumber: string;
+    currency: string;
+    address: string;
+    city: string;
+    postalCode: string;
+    country: string;
+  };
 }
 
-const PROVIDER_META: Record<Provider, { label: string; color: string; border: string; bg: string }> = {
-  paystack:    { label: "Paystack",    color: "text-blue-700",   border: "border-blue-200",   bg: "bg-blue-50"   },
-  flutterwave: { label: "Flutterwave", color: "text-orange-700", border: "border-orange-200", bg: "bg-orange-50" },
-  monnify:     { label: "Monnify",     color: "text-green-700",  border: "border-green-200",  bg: "bg-green-50"  },
-};
-
 function BankDepositForm({ onSuccess: _onSuccess }: { onSuccess: () => void }) {
-  const [accounts,    setAccounts]    = useState<VirtualAccount[]>([]);
-  const [isLoading,   setIsLoading]   = useState(true);
-  const [generating,  setGenerating]  = useState<Provider | null>(null);
-  const [errorMsg,    setErrorMsg]    = useState<string | null>(null);
-  const [showPicker,  setShowPicker]  = useState(false);
+  const [instructions, setInstructions] = useState<WireInstructions | null>(null);
+  const [isLoading,    setIsLoading]    = useState(true);
+  const [errorMsg,     setErrorMsg]     = useState<string | null>(null);
+  const [mockAmount,   setMockAmount]   = useState("");
+  const [mockStatus,   setMockStatus]   = useState<"idle" | "sending" | "sent">("idle");
+  const [mockError,    setMockError]    = useState<string | null>(null);
 
   const authFetch = async (path: string, method: "GET" | "POST" = "GET", body?: object) => {
     const jwt = localStorage.getItem("token");
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (jwt) headers["Authorization"] = `Bearer ${jwt}`;
-    const res = await fetch(`${BASE}${path}`, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    const res = await fetch(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
     const json = await res.json();
     if (!res.ok) throw new Error(json.message ?? "Request failed");
     return json;
   };
 
-  // Load existing virtual accounts on mount
   useEffect(() => {
-    authFetch("/api/deposit/bank/virtual-accounts")
-      .then((data) => setAccounts(data.accounts ?? []))
-      .catch(() => setErrorMsg("Could not load your deposit accounts."))
+    authFetch("/api/deposit/wire/instructions")
+      .then((data) => setInstructions(data))
+      .catch((e: any) => setErrorMsg(e.message || "Could not load wire instructions."))
       .finally(() => setIsLoading(false));
   }, []);
 
-  const handleGenerate = async (provider: Provider) => {
-    setErrorMsg(null);
-    setGenerating(provider);
-    setShowPicker(false);
+  const handleMockDeposit = async () => {
+    const amt = parseFloat(mockAmount);
+    if (!amt || amt <= 0) { setMockError("Enter a valid amount"); return; }
+    setMockError(null);
+    setMockStatus("sending");
     try {
-      const data = await authFetch("/api/deposit/bank/virtual-account", "POST", { provider });
-      setAccounts((prev) => [...prev, data.account]);
+      await authFetch("/api/deposit/wire/mock", "POST", { amount: amt.toFixed(2) });
+      setMockStatus("sent");
+      setMockAmount("");
     } catch (e: any) {
-      setErrorMsg(e.message || "Could not generate account. Please try again.");
-    } finally {
-      setGenerating(null);
+      setMockError(e.message || "Simulation failed");
+      setMockStatus("idle");
     }
   };
-
-  const availableProviders = (["paystack", "flutterwave", "monnify"] as Provider[]).filter(
-    (p) => !accounts.some((a) => a.provider === p),
-  );
 
   if (isLoading) {
     return (
       <div className="flex items-center gap-3 py-8 text-muted-foreground text-sm">
         <Loader2 className="w-4 h-4 animate-spin" />
-        Loading your deposit accounts…
+        Loading your wire deposit instructions…
       </div>
     );
   }
 
+  if (errorMsg || !instructions) {
+    return (
+      <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm">
+        <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+        <span>{errorMsg ?? "Could not load instructions. Please refresh."}</span>
+      </div>
+    );
+  }
+
+  const { beneficiary, beneficiaryBank, trackingRef } = instructions;
+
+  const bankRows = [
+    { label: "Beneficiary Name",  value: beneficiary?.name                },
+    { label: "Bank Name",         value: beneficiaryBank?.name            },
+    { label: "Routing Number",    value: beneficiaryBank?.routingNumber   },
+    { label: "Account Number",    value: beneficiaryBank?.accountNumber   },
+    { label: "SWIFT / BIC",       value: beneficiaryBank?.swiftCode       },
+    { label: "Bank Address",      value: [beneficiaryBank?.address, beneficiaryBank?.city, beneficiaryBank?.postalCode, beneficiaryBank?.country].filter(Boolean).join(", ") },
+  ].filter((r) => r.value);
+
   return (
-    <motion.div variants={staggerContainer(0.08)} initial="hidden" animate="show" className="space-y-5">
-      <AnimatePresence>{errorMsg && <InlineError message={errorMsg} />}</AnimatePresence>
+    <motion.div variants={staggerContainer(0.06)} initial="hidden" animate="show" className="space-y-5">
 
-      {/* Intro note */}
-      {accounts.length === 0 && (
-        <motion.div variants={fadeUp} className="flex items-start gap-3 px-4 py-3 rounded-xl bg-violet-50 border border-violet-200 text-violet-700 text-sm">
-          <Landmark className="w-4 h-4 shrink-0 mt-0.5" />
-          <span>Generate a dedicated bank account number. Transfer any amount to it at any time — your balance is credited automatically.</span>
-        </motion.div>
-      )}
+      {/* Intro */}
+      <motion.div variants={fadeUp} className="flex items-start gap-3 px-4 py-3 rounded-xl bg-blue-50 border border-blue-200 text-blue-700 text-sm">
+        <Building2 className="w-4 h-4 shrink-0 mt-0.5" />
+        <span>Send a <strong>USD wire transfer</strong> to the bank details below. Your balance is credited automatically once Circle receives the funds.</span>
+      </motion.div>
 
-      {/* Existing virtual accounts */}
-      <AnimatePresence>
-        {accounts.map((acct) => {
-          const meta = PROVIDER_META[acct.provider];
-          return (
-            <motion.div
-              key={acct.id}
-              variants={fadeUp}
-              initial="hidden"
-              animate="show"
-              className={cn("rounded-2xl border-2 overflow-hidden", meta.border)}
-            >
-              {/* Provider header */}
-              <div className={cn("flex items-center justify-between px-4 py-2.5", meta.bg)}>
-                <span className={cn("text-xs font-bold uppercase tracking-wide", meta.color)}>{meta.label}</span>
-                <span className="text-xs text-muted-foreground">NGN · Permanent account</span>
-              </div>
+      {/* Circle bank details */}
+      <motion.div variants={fadeUp} className="rounded-2xl border-2 border-border overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-2.5 bg-slate-50 border-b border-border">
+          <span className="text-xs font-bold uppercase tracking-wide text-slate-600">Wire Destination</span>
+          <span className="text-xs text-muted-foreground">USD · Circle / JPMorgan Chase</span>
+        </div>
+        {bankRows.map(({ label, value }) => (
+          <div key={label} className="flex items-center justify-between px-4 py-3 border-b border-border last:border-b-0 bg-white">
+            <span className="text-sm text-muted-foreground shrink-0 mr-4">{label}</span>
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-sm font-semibold text-foreground font-mono truncate">{value}</span>
+              <CopyButton text={value!} />
+            </div>
+          </div>
+        ))}
+      </motion.div>
 
-              {/* Account rows */}
-              {[
-                { label: "Bank",           value: acct.bankName      },
-                { label: "Account Name",   value: acct.accountName   },
-                { label: "Account Number", value: acct.accountNumber },
-              ].map(({ label, value }) => (
-                <div key={label} className="flex items-center justify-between px-4 py-3 border-b border-border last:border-b-0 bg-white">
-                  <span className="text-sm text-muted-foreground">{label}</span>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-foreground font-mono">{value}</span>
-                    <CopyButton text={value} />
-                  </div>
-                </div>
-              ))}
-            </motion.div>
-          );
-        })}
-      </AnimatePresence>
+      {/* Tracking reference — must be included in wire memo */}
+      <motion.div variants={fadeUp} className="rounded-2xl border-2 border-amber-300 overflow-hidden bg-amber-50">
+        <div className="px-4 py-2.5 border-b border-amber-200 flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+          <span className="text-xs font-bold uppercase tracking-wide text-amber-700">Required Wire Reference</span>
+        </div>
+        <div className="flex items-center justify-between px-4 py-3">
+          <div className="space-y-0.5">
+            <p className="text-sm text-amber-800 font-semibold font-mono">{trackingRef}</p>
+            <p className="text-xs text-amber-600">You <strong>must</strong> include this in the wire reference / memo field</p>
+          </div>
+          <CopyButton text={trackingRef} />
+        </div>
+      </motion.div>
 
-      {/* Generate new account — provider picker */}
-      {availableProviders.length > 0 && (
-        <motion.div variants={fadeUp} className="space-y-3">
-          {accounts.length > 0 && (
-            <p className="text-xs text-muted-foreground">Add another provider</p>
-          )}
+      {/* Info note */}
+      <motion.div variants={fadeUp} className="flex items-start gap-2 px-4 py-3 rounded-xl bg-green-50 border border-green-200 text-green-700 text-xs">
+        <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+        <span>These wire details are permanent and unique to your account. Your USD balance is credited automatically — typically within 1–2 business days of the wire being sent.</span>
+      </motion.div>
 
-          <AnimatePresence mode="wait">
-            {!showPicker && !generating ? (
-              <motion.button
-                key="add-btn"
-                variants={fadeUp}
-                initial="hidden"
-                animate="show"
-                exit="hidden"
+      {/* Sandbox simulator */}
+      <motion.div variants={fadeUp} className="rounded-2xl border-2 border-dashed border-violet-300 bg-violet-50 overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-violet-200">
+          <span className="text-xs font-bold uppercase tracking-wide text-violet-600">Sandbox — Simulate Deposit</span>
+        </div>
+        <div className="px-4 py-4 space-y-3">
+          <p className="text-xs text-violet-700">In sandbox mode you can simulate an incoming wire deposit. Circle processes mock deposits in batches and your balance will be credited within ~15 minutes.</p>
+          {mockStatus === "sent" ? (
+            <div className="flex items-center gap-2 text-green-700 text-sm font-medium">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              Mock wire submitted — credit pending (up to 15 min)
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <input
+                type="number"
+                min="1"
+                step="0.01"
+                placeholder="Amount (USD)"
+                value={mockAmount}
+                onChange={(e) => setMockAmount(e.target.value)}
+                className="flex-1 h-9 rounded-lg border border-violet-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
+              />
+              <button
                 type="button"
-                onClick={() => setShowPicker(true)}
-                className="w-full border-2 border-dashed border-border rounded-xl py-4 text-sm font-semibold text-muted-foreground hover:border-primary hover:text-primary flex items-center justify-center gap-2 transition-colors"
+                disabled={mockStatus === "sending"}
+                onClick={handleMockDeposit}
+                className="h-9 px-4 rounded-lg bg-violet-600 text-white text-sm font-semibold hover:bg-violet-700 disabled:opacity-50 flex items-center gap-2 transition-colors"
               >
-                <Plus className="w-4 h-4" />
-                {accounts.length === 0 ? "Generate Deposit Account" : "Add Another Provider"}
-              </motion.button>
-            ) : generating ? (
-              <motion.div
-                key="generating"
-                variants={fadeUp}
-                initial="hidden"
-                animate="show"
-                exit="hidden"
-                className="flex items-center gap-3 px-4 py-4 rounded-xl bg-secondary text-sm text-muted-foreground"
-              >
-                <Loader2 className="w-4 h-4 animate-spin shrink-0" />
-                Generating your {PROVIDER_META[generating].label} account…
-              </motion.div>
-            ) : (
-              <motion.div
-                key="picker"
-                variants={fadeIn}
-                initial="hidden"
-                animate="show"
-                exit="hidden"
-                className="space-y-2"
-              >
-                <p className="text-sm font-medium text-foreground">Select a provider</p>
-                {availableProviders.map((provider) => {
-                  const meta = PROVIDER_META[provider];
-                  return (
-                    <motion.button
-                      key={provider}
-                      type="button"
-                      onClick={() => handleGenerate(provider)}
-                      whileHover={{ x: 4, transition: { type: "spring", stiffness: 400, damping: 20 } }}
-                      className={cn(
-                        "w-full flex items-center justify-between px-4 py-3 rounded-xl border-2 transition-colors text-left",
-                        meta.bg, meta.border,
-                      )}
-                    >
-                      <span className={cn("text-sm font-semibold", meta.color)}>{meta.label}</span>
-                      <ArrowRight className={cn("w-4 h-4", meta.color)} />
-                    </motion.button>
-                  );
-                })}
-                <button
-                  type="button"
-                  onClick={() => setShowPicker(false)}
-                  className="text-xs text-muted-foreground hover:text-foreground transition-colors pt-1"
-                >
-                  Cancel
-                </button>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </motion.div>
-      )}
+                {mockStatus === "sending" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                {mockStatus === "sending" ? "Sending…" : "Simulate"}
+              </button>
+            </div>
+          )}
+          {mockError && <p className="text-xs text-red-600">{mockError}</p>}
+        </div>
+      </motion.div>
 
-      {/* Footer note */}
-      {accounts.length > 0 && (
-        <motion.div variants={fadeUp} className="flex items-start gap-2 px-4 py-3 rounded-xl bg-green-50 border border-green-200 text-green-700 text-xs">
-          <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
-          <span>These are permanent accounts. Transfer any amount at any time — your balance is credited automatically within minutes of confirmation.</span>
-        </motion.div>
-      )}
     </motion.div>
   );
 }

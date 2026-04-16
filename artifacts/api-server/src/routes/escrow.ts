@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import { db, escrowsTable, usersTable, escrowBalancesTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import bcrypt from "bcrypt";
-import { requireAuth } from "../lib/auth.js";
+import { requireAuth, requireEmailVerified } from "../lib/auth.js";
 import { hashEmail, parseUsdcAmount } from "../lib/escrow.js";
 
 const router: IRouter = Router();
@@ -154,7 +154,7 @@ router.get("/history", requireAuth, async (req, res) => {
 
 // ─── POST /api/escrow/send/platform ──────────────────────────────────────────
 // Deducts from the sender's balance and creates an escrow record for the recipient.
-router.post("/send/platform", requireAuth, async (req, res) => {
+router.post("/send/platform", requireAuth, requireEmailVerified, async (req, res) => {
   try {
     const user = (req as any).user;
 

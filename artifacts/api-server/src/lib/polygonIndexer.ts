@@ -12,6 +12,7 @@ import { ethers } from "ethers";
 import { db, usersTable, depositsTable, indexerStateTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { logger } from "./logger.js";
+import { circleTransferUsdc, getPlatformWalletAddress, PRIMARY_USDC_ADDRESS, type SupportedBlockchain } from "./circle.js";
 
 // ─── Network registry ────────────────────────────────────────────────────────
 
@@ -20,26 +21,17 @@ interface NetworkConfig {
   rpcUrl: string;
   usdcAddress: string;
   indexerStateId: number;   // unique row id in indexer_state; must be >= 2
+  circleBlockchain: string; // Circle blockchain identifier for DCW API
 }
 
+// Platform supports Base Sepolia only — single network, single treasury.
 const NETWORKS: NetworkConfig[] = [
-  {
-    name: "Polygon Amoy",
-    rpcUrl: process.env.POLYGON_AMOY_RPC_URL ?? "https://rpc-amoy.polygon.technology/",
-    usdcAddress: (process.env.POLYGON_AMOY_USDC_ADDRESS ?? "0x41e94eb019c0762f9bfcf9fb1e58725bfb0e7582").toLowerCase(),
-    indexerStateId: 2,
-  },
   {
     name: "Base Sepolia",
     rpcUrl: process.env.BASE_SEPOLIA_RPC_URL ?? "https://sepolia.base.org",
     usdcAddress: (process.env.BASE_USDC_ADDRESS ?? "0x036CbD53842c5426634e7929541eC2318f3dCF7e").toLowerCase(),
     indexerStateId: 3,
-  },
-  {
-    name: "Ethereum Sepolia",
-    rpcUrl: process.env.ETH_SEPOLIA_RPC_URL ?? "https://ethereum-sepolia-rpc.publicnode.com",
-    usdcAddress: (process.env.ETH_SEPOLIA_USDC_ADDRESS ?? "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238").toLowerCase(),
-    indexerStateId: 4,
+    circleBlockchain: "BASE-SEPOLIA",
   },
 ];
 
@@ -142,7 +134,7 @@ class NetworkIndexer {
     }
   }
 
-  private async creditDeposit(userId: number, amount: string, txHash: string) {
+  private async creditDeposit(userId: number, amount: string, txHash: string, userAddress: string) {
     // Idempotency
     const [dup] = await db
       .select({ id: depositsTable.id })
@@ -177,6 +169,15 @@ class NetworkIndexer {
       { txHash, userId, amount, network: this.cfg.name },
       `[usdc-indexer:${this.cfg.name}] Credited USDC deposit`,
     );
+
+    // Sweep deposited USDC from the user's SCA wallet to the platform treasury.
+    // Gas Station sponsors gas for SCA wallets — no native ETH needed in user wallets.
+    const platformAddress = getPlatformWalletAddress();
+    if (platformAddress && userAddress.toLowerCase() !== platformAddress.toLowerCase()) {
+      circleTransferUsdc(userAddress, platformAddress, "BASE-SEPOLIA" as SupportedBlockchain, PRIMARY_USDC_ADDRESS, amount)
+        .then(() => logger.info({ userId, amount }, `[usdc-indexer] Swept deposit to treasury`))
+        .catch((e: any) => logger.warn({ err: e?.message, userId, amount }, `[usdc-indexer] Sweep failed`));
+    }
   }
 
   private async processChunk(
@@ -194,7 +195,7 @@ class NetworkIndexer {
       const decimals = await this.getDecimals();
       const value    = log.args[2] as bigint;
       const amount   = parseFloat(ethers.formatUnits(value, decimals)).toFixed(6);
-      await this.creditDeposit(userId, amount, log.transactionHash);
+      await this.creditDeposit(userId, amount, log.transactionHash, to);
     }
   }
 
